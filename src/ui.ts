@@ -1139,7 +1139,19 @@ export function renderDashboardHtml(): string {
         var claudeWeeklyResetSec = isClaudeWeeklyExhausted ? claudeQ.resetSeconds : globalWeeklyResetSec;
 
         var claude5hPct = (isClaude5hExhausted || isClaudeWeeklyExhausted) ? 0 : (typeof claudeQ.remainingPercentage === "number" ? Math.round(claudeQ.remainingPercentage) : 100);
-        var claudeWeeklyPct = isClaudeWeeklyExhausted ? 0 : (isClaude5hExhausted ? 67 : (claude5hPct < 100 ? Math.min(95, Math.max(60, claude5hPct + 10)) : 100));
+
+        var hasUsedClaudeThisWeek = isClaudeWeeklyExhausted || (claudeQ.resetTime && claudeQ.resetTime.length > 0) || (claudeQ.resetSeconds > 0) || (a.requests7d && a.requests7d > 0) || (a.tokens7d && a.tokens7d > 0);
+
+        var claudeWeeklyPct = 100;
+        if (isClaudeWeeklyExhausted) {
+          claudeWeeklyPct = 0;
+        } else if (isClaude5hExhausted) {
+          claudeWeeklyPct = 67;
+        } else if (hasUsedClaudeThisWeek) {
+          claudeWeeklyPct = (claude5hPct < 100) ? Math.min(67, Math.max(34, Math.round(34 + (claude5hPct * 0.33)))) : 67;
+        } else {
+          claudeWeeklyPct = 100;
+        }
 
         var claude5hDesc = "";
         if (isClaude5hExhausted) {
@@ -1155,8 +1167,10 @@ export function renderDashboardHtml(): string {
           claudeWeeklyDesc = "You have hit your weekly limit, it will fully refresh in " + formatCockpitTime(claudeWeeklyResetSec) + ".";
         } else if (isClaude5hExhausted) {
           claudeWeeklyDesc = "You have hit your 5-hour limit, so the weekly limit does not currently apply. Your 5-hour limit will refresh in " + formatCockpitTime(claude5hResetSec) + ".";
-        } else {
+        } else if (claudeWeeklyPct < 100) {
           claudeWeeklyDesc = "You have used some of your weekly limit, it will fully refresh in " + formatCockpitTime(claudeWeeklyResetSec) + ".";
+        } else {
+          claudeWeeklyDesc = "100% weekly capacity available. Active and uncapped for current period.";
         }
 
         // Gemini Limits
