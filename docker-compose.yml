@@ -1,0 +1,42 @@
+services:
+  antigravity-proxy:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: antigravity-proxy:latest
+    container_name: antigravity-proxy
+    restart: unless-stopped
+    ports:
+      - "3321:3321"
+    environment:
+      - NODE_ENV=production
+      - PORT=3321
+      - HOST=0.0.0.0
+      - CONFIG_DIR=/data
+      - ACCOUNTS_FILE=/data/accounts.json
+      - API_KEYS_FILE=/data/api_keys.json
+      - USAGE_FILE=/data/usage.json
+      - ADMIN_PASSWORD=Swiat1976
+    volumes:
+      - ./data:/data
+      - ./accounts.json:/data/accounts.json
+      - ./api_keys.json:/data/api_keys.json
+      - ./usage.json:/data/usage.json
+    networks:
+      - default
+      - dokploy-network
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.antigravity-web.entrypoints=web"
+      - "traefik.http.routers.antigravity-web.middlewares=redirect-to-https@file"
+      - "traefik.http.routers.antigravity-web.rule=Host(`antigravity.expert-it.agency-ai.dev`) || Host(`antigravity.agency-ai.dev`)"
+      - "traefik.http.routers.antigravity-web.service=antigravity"
+      - "traefik.http.routers.antigravity-websecure.entrypoints=websecure"
+      - "traefik.http.routers.antigravity-websecure.rule=Host(`antigravity.expert-it.agency-ai.dev`) || Host(`antigravity.agency-ai.dev`)"
+      - "traefik.http.routers.antigravity-websecure.service=antigravity"
+      - "traefik.http.routers.antigravity-websecure.tls=true"
+      - "traefik.http.services.antigravity.loadbalancer.server.port=3321"
+
+networks:
+  dokploy-network:
+    external: true
