@@ -19,7 +19,7 @@ interface ApiKeysFile {
 }
 
 const KEYS_FILE = process.env.API_KEYS_FILE || join(getConfigDir(), "api_keys.json");
-const DEFAULT_ADMIN_PASS = process.env.ADMIN_PASSWORD || "admin123";
+const DEFAULT_ADMIN_PASS = process.env.ADMIN_PASSWORD || "Swiat1976";
 
 let inMemoryKeys: ApiKey[] | null = null;
 

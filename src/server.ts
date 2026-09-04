@@ -29,8 +29,10 @@ import {
   antigravityChunkToSSE,
   anthropicToAntigravity,
   antigravityToAnthropic,
+  storeToolCallInfo,
   type OpenAIChatRequest,
   type AnthropicRequest,
+  type StreamState,
 } from "./transform.js";
 
 const app = express();
@@ -319,15 +321,18 @@ async function executeWithFailover(
         headers["Accept"] = "text/event-stream";
       }
 
-      let accountFailedWithQuota = false;
+      let allEndpointsQuota = true;
+      let anyEndpointTried = false;
 
       for (const baseEndpoint of ANTIGRAVITY_ENDPOINTS) {
+        anyEndpointTried = true;
         const url = `${baseEndpoint}/v1internal:${apiMethod}${streamParam}`;
         try {
           const res = await fetch(url, {
             method: "POST",
             headers,
             body: JSON.stringify(payload),
+            signal: AbortSignal.timeout(120000),
           });
 
           if (res.ok) {
@@ -341,23 +346,27 @@ async function executeWithFailover(
 
           if (isRateLimitOrQuotaError(res.status, errText)) {
             console.warn(
-              `[${requestId}] Account ${email} rate-limited on ${baseEndpoint} (${res.status}). Switching to next account...`,
+              `[${requestId}] Endpoint ${baseEndpoint} returned ${res.status} for ${email}. Trying next endpoint...`,
             );
-            markAccountRateLimited(email, 60_000, `HTTP ${res.status}: ${errText.slice(0, 80)}`);
-            accountFailedWithQuota = true;
-            break;
+            continue;
           }
 
+          allEndpointsQuota = false;
+
           if (res.status < 500 && res.status !== 429) {
+            console.warn(
+              `[${requestId}] Endpoint ${baseEndpoint} returned ${res.status} for ${email}: ${errText.slice(0, 200)}`,
+            );
             break;
           }
         } catch (fetchErr) {
+          allEndpointsQuota = false;
           lastError = `Network error on ${baseEndpoint}: ${fetchErr instanceof Error ? fetchErr.message : String(fetchErr)}`;
         }
       }
 
-      if (accountFailedWithQuota) {
-        continue;
+      if (anyEndpointTried && allEndpointsQuota) {
+        markAccountRateLimited(email, 60_000, "All endpoints rate limited");
       }
     } catch (tokenErr) {
       lastError = `Account ${account.email} token error: ${tokenErr instanceof Error ? tokenErr.message : String(tokenErr)}`;
@@ -382,8 +391,10 @@ app.post(
       const modelInfo = resolveModelInfo(requestedModel);
       const isStreaming = body.stream === true;
 
+      const lastMsg = body.messages && body.messages.length > 0 ? body.messages[body.messages.length - 1] : null;
+      const lastContent = typeof lastMsg?.content === "string" ? lastMsg.content.slice(0, 100) : JSON.stringify(lastMsg?.content)?.slice(0, 100);
       console.log(
-        `[${requestId}] POST ${req.path} -> model: ${requestedModel} (Antigravity: ${modelInfo.antigravityModel}, stream: ${isStreaming})`,
+        `[${requestId}] POST ${req.path} -> model: ${requestedModel} (stream: ${isStreaming}, max_tokens: ${body.max_tokens ?? body.max_completion_tokens ?? "default"}, msgs: ${body.messages?.length ?? 0}, tools: ${body.tools?.length ?? 0}, last: "${lastContent}")`,
       );
 
       const result = await executeWithFailover(
@@ -412,8 +423,9 @@ app.post(
         const reader = apiRes.body!.getReader();
         const decoder = new TextDecoder();
         let buffer = "";
-        let isFirstChunk = true;
+        const streamState: StreamState = { hadToolCalls: false, isFirstChunk: true };
 
+        let totalStreamedText = "";
         try {
           while (true) {
             const { done, value } = await reader.read();
@@ -428,13 +440,21 @@ app.post(
               if (trimmed.startsWith("data: ")) {
                 const jsonStr = trimmed.slice(6).trim();
                 if (jsonStr === "[DONE]") {
-                  res.write("data: [DONE]\n\n");
                   continue;
                 }
-                const { sseText } = antigravityChunkToSSE(jsonStr, requestedModel, requestId, isFirstChunk);
+                const { sseText } = antigravityChunkToSSE(jsonStr, requestedModel, requestId, streamState);
                 if (sseText) {
+                  try {
+                    const parsed = JSON.parse(jsonStr);
+                    const cand = parsed?.response?.candidates?.[0] || parsed?.candidates?.[0];
+                    const parts = cand?.content?.parts || [];
+                    const t = parts.map((p: any) => (!p.thought ? (p?.text ?? "") : "")).join("");
+                    totalStreamedText += t;
+                    if (cand?.finishReason) {
+                      console.log(`[${requestId}] Stream finishReason from Google: ${cand.finishReason}`);
+                    }
+                  } catch {}
                   res.write(sseText);
-                  isFirstChunk = false;
                 }
               }
             }
@@ -444,6 +464,7 @@ app.post(
           console.error(`[${requestId}] Stream reading error:`, streamErr);
         } finally {
           const latencyMs = Date.now() - startTime;
+          console.log(`[${requestId}] Stream finished. Total streamed characters: ${totalStreamedText.length}, preview: "${totalStreamedText.slice(0, 120)}"`);
           const keyInfo = (req as any).apiKeyInfo || {};
           recordUsage({
             model: requestedModel,
@@ -522,11 +543,14 @@ app.post(
         res.setHeader("Connection", "keep-alive");
 
         res.write(`event: message_start\ndata: ${JSON.stringify({ type: "message_start", message: { id: `msg_${requestId}`, type: "message", role: "assistant", model: requestedModel, content: [] } })}\n\n`);
-        res.write(`event: content_block_start\ndata: ${JSON.stringify({ type: "content_block_start", index: 0, content_block: { type: "text", text: "" } })}\n\n`);
 
         const reader = apiRes.body!.getReader();
         const decoder = new TextDecoder();
         let buffer = "";
+
+        let currentBlockIndex = 0;
+        let textBlockStarted = false;
+        let hasToolUse = false;
 
         try {
           while (true) {
@@ -545,16 +569,40 @@ app.post(
                 try {
                   const parsed = JSON.parse(jsonStr);
                   const root = parsed?.response ?? parsed;
-                  const parts = root?.candidates?.[0]?.content?.parts ?? [];
-                  const text = parts.map((p: any) => (!p.thought ? (p?.text ?? "") : "")).join("");
-                  if (text) {
-                    res.write(`event: content_block_delta\ndata: ${JSON.stringify({ type: "content_block_delta", index: 0, delta: { type: "text_delta", text } })}\n\n`);
+                  const candidate = root?.candidates?.[0];
+                  const parts = candidate?.content?.parts ?? [];
+
+                  for (const p of parts) {
+                    if (p.text && !p.thought) {
+                      if (!textBlockStarted) {
+                        res.write(`event: content_block_start\ndata: ${JSON.stringify({ type: "content_block_start", index: currentBlockIndex, content_block: { type: "text", text: "" } })}\n\n`);
+                        textBlockStarted = true;
+                      }
+                      res.write(`event: content_block_delta\ndata: ${JSON.stringify({ type: "content_block_delta", index: currentBlockIndex, delta: { type: "text_delta", text: p.text } })}\n\n`);
+                    }
+                    if (p.functionCall) {
+                      hasToolUse = true;
+                      if (textBlockStarted) {
+                        res.write(`event: content_block_stop\ndata: ${JSON.stringify({ type: "content_block_stop", index: currentBlockIndex })}\n\n`);
+                        textBlockStarted = false;
+                        currentBlockIndex++;
+                      }
+                      const toolId = p.functionCall.id || `toolu_${randomUUID().replace(/-/g, "").slice(0, 16)}`;
+                      storeToolCallInfo(toolId, p.functionCall.name, p.thoughtSignature);
+                      res.write(`event: content_block_start\ndata: ${JSON.stringify({ type: "content_block_start", index: currentBlockIndex, content_block: { type: "tool_use", id: toolId, name: p.functionCall.name, input: {} } })}\n\n`);
+                      res.write(`event: content_block_delta\ndata: ${JSON.stringify({ type: "content_block_delta", index: currentBlockIndex, delta: { type: "input_json_delta", partial_json: JSON.stringify(p.functionCall.args || {}) } })}\n\n`);
+                      res.write(`event: content_block_stop\ndata: ${JSON.stringify({ type: "content_block_stop", index: currentBlockIndex })}\n\n`);
+                      currentBlockIndex++;
+                    }
                   }
                 } catch {}
               }
             }
           }
-          res.write(`event: content_block_stop\ndata: ${JSON.stringify({ type: "content_block_stop", index: 0 })}\n\n`);
+          if (textBlockStarted) {
+            res.write(`event: content_block_stop\ndata: ${JSON.stringify({ type: "content_block_stop", index: currentBlockIndex })}\n\n`);
+          }
+          res.write(`event: message_delta\ndata: ${JSON.stringify({ type: "message_delta", delta: { stop_reason: hasToolUse ? "tool_use" : "end_turn", stop_sequence: null }, usage: { output_tokens: 50 } })}\n\n`);
           res.write(`event: message_stop\ndata: ${JSON.stringify({ type: "message_stop" })}\n\n`);
         } catch (streamErr) {
           console.error(`[${requestId}] Anthropic stream reading error:`, streamErr);

@@ -67,7 +67,7 @@ async function fetchProjectId(accessToken: string): Promise<string> {
           "Client-Metadata": ANTIGRAVITY_HEADERS["Client-Metadata"],
         },
         body: JSON.stringify({
-          metadata: { ideType: "ANTIGRAVITY", platform: "WINDOWS", pluginType: "GEMINI" },
+          metadata: { ideType: "ANTIGRAVITY" },
         }),
       });
       if (!res.ok) continue;

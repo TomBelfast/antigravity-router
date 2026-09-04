@@ -1,6 +1,7 @@
 import { loadUsage } from "./stats.js";
 import { loadAccounts, saveAccounts, type Account } from "./storage.js";
 import { refreshAccessToken } from "./oauth.js";
+import { ANTIGRAVITY_ENDPOINTS, ANTIGRAVITY_HEADERS } from "./constants.js";
 
 // In-memory cooldown tracker: email -> timestamp when rate limit expires
 const cooldowns = new Map<string, number>();
@@ -133,6 +134,14 @@ export interface ModelQuota {
   resetTime?: string;
   resetSeconds: number;
   label: string;
+  maxTokens: number;
+  remainingTokens: number;
+  usedTokens: number;
+  weeklyPercentage?: number;
+  weeklyResetTime?: string;
+  weeklyResetSeconds?: number;
+  weeklyDescription?: string;
+  description?: string;
 }
 
 export interface AccountQuotaStatus {
@@ -159,29 +168,173 @@ const quotaCache = new Map<string, CachedAccountQuota>();
 
 /**
  * Queries Google CloudCode API for real live model quotas.
+ * Automatically tries retrieveUserQuotaSummary on all Antigravity PA endpoints (Daily first).
+ * Falls back to fetchAvailableModels if summary is not available.
  */
 export async function fetchLiveQuotaForAccount(account: Account): Promise<CachedAccountQuota> {
   const now = Date.now();
   try {
     const { accessToken, projectId } = await getValidAccessTokenForAccount(account);
-    const res = await fetch("https://cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels", {
-      method: "POST",
-      headers: {
-        "Authorization": `Bearer ${accessToken}`,
-        "Content-Type": "application/json",
-        "User-Agent": "antigravity/1.0.0 linux/x64",
-      },
-      body: JSON.stringify(projectId ? { project: projectId } : {}),
-    });
+    let summaryData: any = null;
+    let lastError: any = null;
 
-    if (!res.ok) {
-      throw new Error(`Google CloudCode returned HTTP ${res.status}`);
+    // 1. Try retrieveUserQuotaSummary across endpoints (Daily first!)
+    for (const endpoint of ANTIGRAVITY_ENDPOINTS) {
+      try {
+        const res = await fetch(`${endpoint}/v1internal:retrieveUserQuotaSummary`, {
+          method: "POST",
+          headers: {
+            "Authorization": `Bearer ${accessToken}`,
+            "Content-Type": "application/json",
+            ...ANTIGRAVITY_HEADERS,
+          },
+          body: JSON.stringify(projectId ? { project: projectId } : {}),
+        });
+
+        if (res.ok) {
+          summaryData = await res.json();
+          if (summaryData && Array.isArray(summaryData.groups) && summaryData.groups.length > 0) {
+            break;
+          }
+        } else {
+          lastError = new Error(`retrieveUserQuotaSummary HTTP ${res.status} from ${endpoint}`);
+        }
+      } catch (e: any) {
+        lastError = e;
+      }
     }
 
-    const data: any = await res.json();
+    if (summaryData && Array.isArray(summaryData.groups) && summaryData.groups.length > 0) {
+      let geminiGroup: any = summaryData.groups.find((g: any) =>
+        g.displayName?.toLowerCase().includes("gemini") ||
+        g.buckets?.some((b: any) => b.bucketId?.startsWith("gemini"))
+      );
+      let claudeGroup: any = summaryData.groups.find((g: any) =>
+        g.displayName?.toLowerCase().includes("claude") ||
+        g.displayName?.toLowerCase().includes("gpt") ||
+        g.buckets?.some((b: any) => b.bucketId?.startsWith("3p"))
+      );
+
+      const parseBucket = (bucket: any): {
+        pct: number;
+        resetTime?: string;
+        resetSeconds: number;
+        desc?: string;
+      } => {
+        if (!bucket) return { pct: 100, resetSeconds: 0 };
+        const resetIso = bucket.resetTime as string | undefined;
+        let resetSeconds = 0;
+        if (resetIso) {
+          const rt = new Date(resetIso).getTime();
+          if (!isNaN(rt)) {
+            resetSeconds = Math.max(0, Math.floor((rt - now) / 1000));
+          }
+        }
+        let pct = 100;
+        if (typeof bucket.remainingFraction === "number" && !isNaN(bucket.remainingFraction)) {
+          pct = Math.round(bucket.remainingFraction * 1000) / 10;
+        } else if (resetSeconds > 0) {
+          pct = 0;
+        }
+        return {
+          pct,
+          resetTime: resetIso,
+          resetSeconds,
+          desc: bucket.description,
+        };
+      };
+
+      // Gemini Buckets
+      const geminiBuckets = geminiGroup?.buckets || [];
+      const g5h = geminiBuckets.find((b: any) => b.window === "5h" || b.bucketId?.endsWith("-5h"));
+      const gWk = geminiBuckets.find((b: any) => b.window === "weekly" || b.bucketId?.endsWith("-weekly"));
+
+      const g5hParsed = parseBucket(g5h);
+      const gWkParsed = parseBucket(gWk);
+
+      const geminiMaxTokens = 1048576;
+      const geminiRemainingTokens = Math.round(geminiMaxTokens * (g5hParsed.pct / 100));
+      const geminiUsedTokens = Math.max(0, geminiMaxTokens - geminiRemainingTokens);
+
+      const geminiQuota: ModelQuota = {
+        remainingPercentage: g5hParsed.pct,
+        resetTime: g5hParsed.resetTime,
+        resetSeconds: g5hParsed.resetSeconds,
+        label: "Gemini 3.8 Flash / Pro",
+        maxTokens: geminiMaxTokens,
+        remainingTokens: geminiRemainingTokens,
+        usedTokens: geminiUsedTokens,
+        weeklyPercentage: gWkParsed.pct,
+        weeklyResetTime: gWkParsed.resetTime,
+        weeklyResetSeconds: gWkParsed.resetSeconds,
+        weeklyDescription: gWkParsed.desc,
+        description: g5hParsed.desc,
+      };
+
+      // Claude Buckets
+      const claudeBuckets = claudeGroup?.buckets || [];
+      const c5h = claudeBuckets.find((b: any) => b.window === "5h" || b.bucketId?.endsWith("-5h"));
+      const cWk = claudeBuckets.find((b: any) => b.window === "weekly" || b.bucketId?.endsWith("-weekly"));
+
+      const c5hParsed = parseBucket(c5h);
+      const cWkParsed = parseBucket(cWk);
+
+      const claudeMaxTokens = 250000;
+      const claudeRemainingTokens = Math.round(claudeMaxTokens * (c5hParsed.pct / 100));
+      const claudeUsedTokens = Math.max(0, claudeMaxTokens - claudeRemainingTokens);
+
+      const claudeQuota: ModelQuota = {
+        remainingPercentage: c5hParsed.pct,
+        resetTime: c5hParsed.resetTime,
+        resetSeconds: c5hParsed.resetSeconds,
+        label: "Claude Sonnet 4.6 / GPT",
+        maxTokens: claudeMaxTokens,
+        remainingTokens: claudeRemainingTokens,
+        usedTokens: claudeUsedTokens,
+        weeklyPercentage: cWkParsed.pct,
+        weeklyResetTime: cWkParsed.resetTime,
+        weeklyResetSeconds: cWkParsed.resetSeconds,
+        weeklyDescription: cWkParsed.desc,
+        description: c5hParsed.desc,
+      };
+
+      const result = { claudeQuota, geminiQuota, fetchedAt: now };
+      quotaCache.set(account.email, result);
+      return result;
+    }
+
+    // 2. Fallback to fetchAvailableModels if retrieveUserQuotaSummary is not available
+    let data: any = null;
+    for (const endpoint of ANTIGRAVITY_ENDPOINTS) {
+      try {
+        const res = await fetch(`${endpoint}/v1internal:fetchAvailableModels`, {
+          method: "POST",
+          headers: {
+            "Authorization": `Bearer ${accessToken}`,
+            "Content-Type": "application/json",
+            ...ANTIGRAVITY_HEADERS,
+          },
+          body: JSON.stringify(projectId ? { project: projectId } : {}),
+        });
+
+        if (res.ok) {
+          data = await res.json();
+          break;
+        } else {
+          lastError = new Error(`HTTP ${res.status} from ${endpoint}`);
+        }
+      } catch (e: any) {
+        lastError = e;
+      }
+    }
+
+    if (!data) {
+      throw lastError || new Error("Failed to fetch available models from all endpoints");
+    }
+
     const models = data?.models || {};
 
-    const extract = (candidates: string[], defaultLabel: string): ModelQuota => {
+    const extract = (candidates: string[], defaultLabel: string, defaultMaxTokens: number): ModelQuota => {
       for (const name of candidates) {
         const m = models[name];
         if (m && m.quotaInfo) {
@@ -195,33 +348,52 @@ export async function fetchLiveQuotaForAccount(account: Account): Promise<Cached
             }
           }
 
+          let fraction = typeof qi.remainingFraction === "number" && !isNaN(qi.remainingFraction) ? qi.remainingFraction : undefined;
           let pct = 100;
-          if (typeof qi.remainingFraction === "number" && !isNaN(qi.remainingFraction)) {
-            pct = Math.round(qi.remainingFraction * 1000) / 10;
+          if (fraction !== undefined) {
+            pct = Math.round(fraction * 1000) / 10;
           } else if (resetSeconds > 0) {
-            // When remainingFraction is not defined/NaN but resetTime is set in the future, quota is depleted
             pct = 0;
+            fraction = 0;
+          } else {
+            fraction = 1;
           }
+
+          const maxTokens = (typeof m.maxTokens === "number" && m.maxTokens > 0) ? m.maxTokens : defaultMaxTokens;
+          const remainingTokens = Math.round(maxTokens * fraction);
+          const usedTokens = Math.max(0, maxTokens - remainingTokens);
 
           return {
             remainingPercentage: pct,
             resetTime: resetIso,
             resetSeconds,
             label: m.displayName || defaultLabel,
+            maxTokens,
+            remainingTokens,
+            usedTokens,
           };
         }
       }
-      return { remainingPercentage: 100, resetSeconds: 0, label: defaultLabel };
+      return {
+        remainingPercentage: 100,
+        resetSeconds: 0,
+        label: defaultLabel,
+        maxTokens: defaultMaxTokens,
+        remainingTokens: defaultMaxTokens,
+        usedTokens: 0,
+      };
     };
 
     const claudeQuota = extract(
       ["claude-sonnet-4-6", "claude-opus-4-6-thinking", "claude-3-7-sonnet"],
       "Claude 3.7 Sonnet / Opus",
+      250000,
     );
 
     const geminiQuota = extract(
       ["gemini-3-flash", "gemini-2.5-pro", "gemini-3.8-flash-high", "gemini-3.6-flash-high"],
       "Gemini 3.8 Flash / Pro",
+      1048576,
     );
 
     const result = { claudeQuota, geminiQuota, fetchedAt: now };
@@ -230,8 +402,8 @@ export async function fetchLiveQuotaForAccount(account: Account): Promise<Cached
   } catch (err: any) {
     console.warn(`[quota] Live quota fetch failed for ${account.email}:`, err.message);
     const fallback: CachedAccountQuota = {
-      claudeQuota: { remainingPercentage: 100, resetSeconds: 0, label: "Claude" },
-      geminiQuota: { remainingPercentage: 100, resetSeconds: 0, label: "Gemini" },
+      claudeQuota: { remainingPercentage: 100, resetSeconds: 0, label: "Claude", maxTokens: 250000, remainingTokens: 250000, usedTokens: 0 },
+      geminiQuota: { remainingPercentage: 100, resetSeconds: 0, label: "Gemini", maxTokens: 1048576, remainingTokens: 1048576, usedTokens: 0 },
       fetchedAt: now,
     };
     if (!quotaCache.has(account.email)) {
@@ -295,8 +467,8 @@ export function getAccountsStatus(): AccountQuotaStatus[] {
     const isRateLimited = until > now;
 
     const cached = quotaCache.get(acc.email);
-    const claudeQ = cached?.claudeQuota || { remainingPercentage: 100, resetSeconds: 0, label: "Claude" };
-    const geminiQ = cached?.geminiQuota || { remainingPercentage: 100, resetSeconds: 0, label: "Gemini" };
+    const claudeQ = cached?.claudeQuota || { remainingPercentage: 100, resetSeconds: 0, label: "Claude", maxTokens: 250000, remainingTokens: 250000, usedTokens: 0 };
+    const geminiQ = cached?.geminiQuota || { remainingPercentage: 100, resetSeconds: 0, label: "Gemini", maxTokens: 1048576, remainingTokens: 1048576, usedTokens: 0 };
 
     const calcReset = (q: ModelQuota): ModelQuota => {
       let rSec = 0;
@@ -304,9 +476,15 @@ export function getAccountsStatus(): AccountQuotaStatus[] {
         const rt = new Date(q.resetTime).getTime();
         if (!isNaN(rt)) rSec = Math.max(0, Math.floor((rt - now) / 1000));
       }
+      let wrSec = q.weeklyResetSeconds ?? 0;
+      if (q.weeklyResetTime) {
+        const wrt = new Date(q.weeklyResetTime).getTime();
+        if (!isNaN(wrt)) wrSec = Math.max(0, Math.floor((wrt - now) / 1000));
+      }
       return {
         ...q,
         resetSeconds: rSec,
+        weeklyResetSeconds: wrSec,
       };
     };
 

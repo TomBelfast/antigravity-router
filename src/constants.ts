@@ -20,9 +20,9 @@ export const ANTIGRAVITY_SCOPES = [
   "https://www.googleapis.com/auth/experimentsandconfigs",
 ];
 
-export const ANTIGRAVITY_ENDPOINT_DAILY = "https://daily-cloudcode-pa.sandbox.googleapis.com";
+export const ANTIGRAVITY_ENDPOINT_DAILY = "https://daily-cloudcode-pa.googleapis.com";
 export const ANTIGRAVITY_ENDPOINT_PROD = "https://cloudcode-pa.googleapis.com";
-export const ANTIGRAVITY_ENDPOINT_AUTOPUSH = "https://autopush-cloudcode-pa.sandbox.googleapis.com";
+export const ANTIGRAVITY_ENDPOINT_AUTOPUSH = "https://autopush-cloudcode-pa.googleapis.com";
 
 export const ANTIGRAVITY_ENDPOINTS = [
   ANTIGRAVITY_ENDPOINT_DAILY,

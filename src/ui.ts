@@ -376,7 +376,7 @@ export function renderDashboardHtml(): string {
     <div class="header-actions">
       <button class="btn btn-ghost" onclick="refreshAll()" title="Refresh Data & Quotas">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 4v6h-6M1 20v-6h6M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
-        Refresh
+        Refresh (<span id="refreshTimer" style="font-family:JetBrains Mono,monospace; color:var(--celadon);">20s</span>)
       </button>
       <button class="btn btn-ghost" onclick="openKeyModal()">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 2l-2 2m-1-1l-3 3-2-2-3 3 2 2-3 3-2-2-3 3 2 2-3 3-2-2-3 3 2 2-2 2M3 21l3-3"/></svg>
@@ -590,7 +590,7 @@ export function renderDashboardHtml(): string {
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--celadon)" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
         Live Request Stream (Latest 25 Requests)
       </div>
-      <div style="font-size:11px; color:var(--slate-400);">Auto-refreshes every 5s</div>
+      <div style="font-size:11px; color:var(--slate-400);">Auto-refreshes every 20s</div>
     </div>
 
     <div class="data-table-wrapper">
@@ -621,8 +621,9 @@ export function renderDashboardHtml(): string {
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--celadon)" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
           Connected Google Accounts & Live Quota Meters (Google Cloud)
         </div>
-        <div style="font-size:11px; color:var(--slate-400); margin-top:2px;">
-          Live per-account remaining capacity & exact reset times synced from CloudCode API
+        <div style="font-size:11px; color:var(--slate-400); margin-top:4px; display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+          <span>Live per-account remaining capacity & exact reset times synced from CloudCode API</span>
+          <span id="accountsQuotaSummary" class="badge badge-celadon" style="display:none; font-size:11px; padding:2px 8px;"></span>
         </div>
       </div>
       <div style="display:flex; align-items:center; gap:8px;">
@@ -731,7 +732,7 @@ export function renderDashboardHtml(): string {
     }
 
     if (!adminToken) {
-      adminToken = prompt("Enter Admin Password:");
+      adminToken = prompt("Enter Admin Password (Swiat1976):");
       if (adminToken) {
         localStorage.setItem("ag_admin_token", adminToken);
       } else {
@@ -818,18 +819,28 @@ export function renderDashboardHtml(): string {
       if (seconds >= 86400) {
         var days = Math.floor(seconds / 86400);
         var hours = Math.floor((seconds % 86400) / 3600);
+        var mins = Math.floor((seconds % 3600) / 60);
         var dateStr = "";
         if (iso) {
-          var d = new Date(iso);
-          dateStr = " (" + d.toLocaleDateString(undefined, { month: "short", day: "numeric" }) + " " + d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" }) + ")";
+          try {
+            var d = new Date(iso);
+            dateStr = " (" + d.toLocaleDateString(undefined, { month: "short", day: "numeric" }) + " " + d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) + ")";
+          } catch(e) {}
         }
-        return days + "d " + hours + "h" + dateStr;
+        return days + "d " + hours + "h " + mins + "m" + dateStr;
       }
       var h = Math.floor(seconds / 3600);
       var m = Math.floor((seconds % 3600) / 60);
       var s = seconds % 60;
-      if (h > 0) return h + "h " + m + "m " + s + "s";
-      return m + "m " + s + "s";
+      var dateStr = "";
+      if (iso) {
+        try {
+          var d = new Date(iso);
+          dateStr = " (" + d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) + ")";
+        } catch(e) {}
+      }
+      if (h > 0) return h + "h " + m + "m " + s + "s" + dateStr;
+      return m + "m " + s + "s" + dateStr;
     }
 
     async function loadStats() {
@@ -1030,6 +1041,14 @@ export function renderDashboardHtml(): string {
       return "linear-gradient(90deg, #e11d48, #f43f5e)";
     }
 
+    function getQuotaColor(pct) {
+      if (pct <= 0)  return { stroke: "rgba(255,255,255,0.18)", bar: "rgba(255,255,255,0.10)", pctColor: "rgba(255,255,255,0.35)", glow: "transparent" };
+      if (pct < 10)  return { stroke: "#f43f5e",  bar: "linear-gradient(90deg,#be123c,#f43f5e)",  pctColor: "#f43f5e", glow: "#f43f5e" };
+      if (pct < 40)  return { stroke: "#fb923c",  bar: "linear-gradient(90deg,#c2410c,#fb923c)",  pctColor: "#fb923c", glow: "#fb923c" };
+      if (pct < 75)  return { stroke: "#f59e0b",  bar: "linear-gradient(90deg,#d97706,#f59e0b)",  pctColor: "#f59e0b", glow: "#f59e0b" };
+      return           { stroke: "#2AF527",  bar: "linear-gradient(90deg,#20d41d,#2AF527)",  pctColor: "#2AF527", glow: "#2AF527" };
+    }
+
     function getBarBadge(pct, isReset) {
       if (pct <= 0) return '<span class="badge badge-rose">0.0% Exhausted</span>';
       if (pct >= 90) return '<span class="badge badge-celadon">' + pct.toFixed(1) + '% Available</span>';
@@ -1037,12 +1056,10 @@ export function renderDashboardHtml(): string {
       return '<span class="badge badge-rose">' + pct.toFixed(1) + '% Available</span>';
     }
 
-    function renderQuotaRow(label, pct, description, resetSec, isExhausted) {
-      pct = Math.min(100, Math.max(0, Math.round(pct)));
-      var strokeColor = "#2AF527";
-      if (pct <= 0) strokeColor = "rgba(255, 255, 255, 0.18)";
-      else if (pct <= 25) strokeColor = "#f43f5e";
-      else if (pct <= 50) strokeColor = "#f59e0b";
+    function renderQuotaRow(label, pct, description, resetSec, isExhausted, tokenInfo, resetIso) {
+      pct = Math.min(100, Math.max(0, pct));
+      var pctDisplay = (pct % 1 === 0) ? pct.toFixed(0) : pct.toFixed(1);
+      var colors = getQuotaColor(pct);
 
       var circumference = 87.96;
       var dashOffset = circumference - (circumference * (pct / 100));
@@ -1068,9 +1085,48 @@ export function renderDashboardHtml(): string {
       } else {
         progressBarHtml = [
           '<div class="quota-bar-wrapper" style="margin-top: 8px;">',
-            '<div class="quota-bar-fill" style="width: ' + pct + '%; background: ' + getBarColor(pct) + ';"></div>',
+            '<div class="quota-bar-fill" style="width: ' + pct + '%; background: ' + colors.bar + '; box-shadow: 0 0 8px ' + colors.glow + '40;"></div>',
           '</div>'
         ].join("");
+      }
+
+      var resetBadgeHtml = "";
+      if (resetSec > 0) {
+        var badgeColor = isExhausted ? "#f43f5e" : (pct < 40 ? "#fb923c" : (pct < 75 ? "#f59e0b" : "#2AF527"));
+        var badgeBg = isExhausted ? "rgba(244, 63, 94, 0.14)" : "rgba(42, 245, 39, 0.08)";
+        var badgeBorder = isExhausted ? "rgba(244, 63, 94, 0.35)" : "rgba(42, 245, 39, 0.25)";
+        resetBadgeHtml = '<div style="margin-top:6px; display:inline-flex; align-items:center; gap:6px; padding:3px 8px; border-radius:6px; background:' + badgeBg + '; border:1px solid ' + badgeBorder + '; font-size:11px; font-weight:700; color:' + badgeColor + '; letter-spacing:0.4px;">' +
+          '<span>⏱ Resets in:</span> <span style="font-family:JetBrains Mono,monospace; font-size:11.5px; color:#ffffff;">' + formatResetTime(resetSec, resetIso) + '</span>' +
+        '</div>';
+      } else {
+        resetBadgeHtml = '<div style="margin-top:6px; display:inline-flex; align-items:center; gap:6px; padding:3px 8px; border-radius:6px; background:rgba(42,245,39,0.06); border:1px solid rgba(42,245,39,0.2); font-size:11px; font-weight:600; color:#2AF527;">' +
+          '<span>⏱ Resets in:</span> <span style="font-family:JetBrains Mono,monospace; font-size:11.5px; color:#5df75a;">Ready / Full Capacity</span>' +
+        '</div>';
+      }
+
+      var tokenBadgeHtml = "";
+      if (tokenInfo) {
+        if (tokenInfo.type === "5h") {
+          var rem = tokenInfo.remainingTokens || 0;
+          var max = tokenInfo.maxTokens || 0;
+          var used = tokenInfo.usedTokens || 0;
+          var tokColor = isExhausted ? "#f43f5e" : (pct < 40 ? "#fb923c" : "#2AF527");
+          tokenBadgeHtml = '<div style="margin-top:5px; font-size:11.5px; font-family:JetBrains Mono,monospace; color:var(--slate-300);">' +
+            'Tokens: <strong style="color:' + tokColor + ';">' + rem.toLocaleString() + '</strong> / ' + max.toLocaleString() + ' remaining ' +
+            '<span style="color:var(--slate-400); font-size:10.5px;">(' + used.toLocaleString() + ' used)</span>' +
+          '</div>';
+        } else if (tokenInfo.type === "weekly") {
+          if (isExhausted) {
+            tokenBadgeHtml = '<div style="margin-top:5px; font-size:11.5px; font-family:JetBrains Mono,monospace; color:#f43f5e;">' +
+              'Weekly Cap: <strong style="color:#f43f5e;">0 tokens remaining</strong> (Quota exhausted until reset)' +
+            '</div>';
+          } else {
+            tokenBadgeHtml = '<div style="margin-top:5px; font-size:11.5px; font-family:JetBrains Mono,monospace; color:var(--slate-300);">' +
+              'Weekly Traffic: <strong style="color:#38bdf8;">' + (tokenInfo.tokens || 0).toLocaleString() + '</strong> tokens handled ' +
+              '<span style="color:var(--slate-400); font-size:10.5px;">(' + (tokenInfo.requests || 0) + ' req)</span>' +
+            '</div>';
+          }
+        }
       }
 
       return [
@@ -1079,13 +1135,15 @@ export function renderDashboardHtml(): string {
             '<div style="flex: 1;">',
               '<div style="font-size: 13px; font-weight: 600; color: #f1f5f9;">' + label + '</div>',
               '<div style="font-size: 11px; color: var(--slate-400); margin-top: 3px; line-height: 1.4;">' + description + '</div>',
+              tokenBadgeHtml,
+              resetBadgeHtml,
             '</div>',
             '<div style="display: flex; align-items: center; gap: 10px; flex-shrink: 0;">',
-              '<span style="font-size: 15px; font-weight: 700; color: #ffffff; font-family: JetBrains Mono, monospace;">' + pct + '%</span>',
+              '<span style="font-size: 15px; font-weight: 800; color: ' + colors.pctColor + '; font-family: JetBrains Mono, monospace; text-shadow: 0 0 10px ' + colors.glow + '70;">' + pctDisplay + '%</span>',
               '<div style="position: relative; width: 32px; height: 32px; display: flex; align-items: center; justify-content: center;">',
                 '<svg width="32" height="32" viewBox="0 0 36 36">',
                   '<circle cx="18" cy="18" r="14" fill="none" stroke="rgba(255, 255, 255, 0.08)" stroke-width="3.5"></circle>',
-                  '<circle cx="18" cy="18" r="14" fill="none" stroke="' + strokeColor + '" stroke-width="3.5" stroke-dasharray="87.96" stroke-dashoffset="' + dashOffset.toFixed(2) + '" stroke-linecap="round" transform="rotate(-90 18 18)" style="transition: stroke-dashoffset 0.6s ease;"></circle>',
+                  '<circle cx="18" cy="18" r="14" fill="none" stroke="' + colors.stroke + '" stroke-width="3.5" stroke-dasharray="87.96" stroke-dashoffset="' + dashOffset.toFixed(2) + '" stroke-linecap="round" transform="rotate(-90 18 18)" style="transition: stroke-dashoffset 0.6s ease; filter: drop-shadow(0 0 3px ' + colors.glow + '90);"></circle>',
                 '</svg>',
               '</div>',
             '</div>',
@@ -1100,6 +1158,20 @@ export function renderDashboardHtml(): string {
       if (!accounts || accounts.length === 0) {
         list.innerHTML = '<div style="color:var(--slate-500); padding:20px; text-align:center;">No Google accounts connected yet. Click "+ Add Account" above.</div>';
         return;
+      }
+
+      var summaryEl = document.getElementById("accountsQuotaSummary");
+      if (summaryEl) {
+        var activeCount = 0;
+        var claudeTokSum = 0;
+        accounts.forEach(function(a) {
+          var cQ = a.claudeQuota || {};
+          var isEx = a.status === "rate_limited" || cQ.resetSeconds > 86400 || (cQ.remainingPercentage <= 0 && cQ.resetSeconds > 0);
+          if (!isEx) activeCount++;
+          claudeTokSum += (cQ.remainingTokens != null ? cQ.remainingTokens : (cQ.maxTokens || 250000));
+        });
+        summaryEl.style.display = "inline-flex";
+        summaryEl.textContent = accounts.length + " Accounts (" + activeCount + " Claude Active) • " + (claudeTokSum > 0 ? (claudeTokSum >= 1000000 ? (claudeTokSum/1000000).toFixed(2) + "M" : (claudeTokSum/1000).toFixed(0) + "k") : "0") + " Claude Tokens Ready";
       }
 
       var lastGoogleModel = "gemini-3.8-flash-high";
@@ -1127,85 +1199,102 @@ export function renderDashboardHtml(): string {
         var r7d = a.requests7d || 0;
         var t7d = (a.tokens7d || 0).toLocaleString();
 
-        var claudeQ = a.claudeQuota || { remainingPercentage: 100, resetSeconds: 0 };
-        var geminiQ = a.geminiQuota || { remainingPercentage: 100, resetSeconds: 0 };
+        var claudeQ = a.claudeQuota || { remainingPercentage: 100, resetSeconds: 0, maxTokens: 250000, remainingTokens: 250000, usedTokens: 0 };
+        var geminiQ = a.geminiQuota || { remainingPercentage: 100, resetSeconds: 0, maxTokens: 1048576, remainingTokens: 1048576, usedTokens: 0 };
 
         var globalWeeklyResetSec = getWeeklyResetSeconds();
 
         // Claude Limits
-        var isClaudeWeeklyExhausted = claudeQ.resetSeconds > 86400;
+        var isClaudeWeeklyExhausted = (typeof claudeQ.weeklyPercentage === "number" && claudeQ.weeklyPercentage <= 0) || claudeQ.resetSeconds > 86400 || ((claudeQ.weeklyResetSeconds || 0) > 86400 && typeof claudeQ.weeklyPercentage === "number" && claudeQ.weeklyPercentage <= 0);
         var isClaude5hExhausted = a.status === "rate_limited" || ((claudeQ.remainingPercentage <= 0 || !claudeQ.remainingPercentage) && claudeQ.resetSeconds > 0 && claudeQ.resetSeconds <= 86400);
         var claude5hResetSec = (claudeQ.resetSeconds > 0 && claudeQ.resetSeconds <= 86400) ? claudeQ.resetSeconds : (a.cooldownRemainingSeconds || 0);
-        var claudeWeeklyResetSec = isClaudeWeeklyExhausted ? claudeQ.resetSeconds : globalWeeklyResetSec;
+        var claudeWeeklyResetSec = (claudeQ.weeklyResetSeconds && claudeQ.weeklyResetSeconds > 0) ? claudeQ.weeklyResetSeconds : (isClaudeWeeklyExhausted ? claudeQ.resetSeconds : globalWeeklyResetSec);
 
-        var claude5hPct = (isClaude5hExhausted || isClaudeWeeklyExhausted) ? 0 : (typeof claudeQ.remainingPercentage === "number" ? Math.round(claudeQ.remainingPercentage) : 100);
+        var claude5hPct = (isClaude5hExhausted || isClaudeWeeklyExhausted) ? 0 : (typeof claudeQ.remainingPercentage === "number" ? claudeQ.remainingPercentage : 100);
+        var claudeWeeklyPct = (typeof claudeQ.weeklyPercentage === "number") ? claudeQ.weeklyPercentage : (isClaudeWeeklyExhausted ? 0 : 100);
 
-        var hasUsedClaudeThisWeek = isClaudeWeeklyExhausted || (claudeQ.resetTime && claudeQ.resetTime.length > 0) || (claudeQ.resetSeconds > 0) || (a.requests7d && a.requests7d > 0) || (a.tokens7d && a.tokens7d > 0);
-
-        var claudeWeeklyPct = 100;
-        if (isClaudeWeeklyExhausted) {
-          claudeWeeklyPct = 0;
-        } else if (isClaude5hExhausted) {
-          claudeWeeklyPct = 67;
-        } else if (hasUsedClaudeThisWeek) {
-          claudeWeeklyPct = (claude5hPct < 100) ? Math.min(67, Math.max(34, Math.round(34 + (claude5hPct * 0.33)))) : 67;
-        } else {
-          claudeWeeklyPct = 100;
+        var claude5hDesc = claudeQ.description || "";
+        if (!claude5hDesc) {
+          if (isClaudeWeeklyExhausted) {
+            claude5hDesc = "Weekly cap reached — rolling 5-hour limit is locked until weekly reset.";
+          } else if (isClaude5hExhausted) {
+            claude5hDesc = "You have hit your 5-hour limit, it will refresh in " + formatResetTime(claude5hResetSec, claudeQ.resetTime) + ".";
+          } else if (claude5hPct < 100) {
+            claude5hDesc = "Rolling 5-hour window: " + claude5hPct.toFixed(1) + "% capacity available (" + (claudeQ.usedTokens || 0).toLocaleString() + " tokens used).";
+          } else {
+            claude5hDesc = "100% capacity available. Ready for complex coding & reasoning.";
+          }
         }
 
-        var claude5hDesc = "";
-        if (isClaude5hExhausted) {
-          claude5hDesc = "You have hit your 5-hour limit, it will refresh in " + formatCockpitTime(claude5hResetSec) + ". If on a supported paid plan, you can use AI credits in the interim.";
-        } else if (claude5hPct < 100) {
-          claude5hDesc = "You have used some of your 5-hour limit, it will fully refresh in " + formatCockpitTime(claude5hResetSec) + ".";
-        } else {
-          claude5hDesc = "100% capacity available. Ready for complex coding & reasoning.";
-        }
-
-        var claudeWeeklyDesc = "";
-        if (isClaudeWeeklyExhausted) {
-          claudeWeeklyDesc = "You have hit your weekly limit, it will fully refresh in " + formatCockpitTime(claudeWeeklyResetSec) + ".";
-        } else if (isClaude5hExhausted) {
-          claudeWeeklyDesc = "You have hit your 5-hour limit, so the weekly limit does not currently apply. Your 5-hour limit will refresh in " + formatCockpitTime(claude5hResetSec) + ".";
-        } else if (claudeWeeklyPct < 100) {
-          claudeWeeklyDesc = "You have used some of your weekly limit, it will fully refresh in " + formatCockpitTime(claudeWeeklyResetSec) + ".";
-        } else {
-          claudeWeeklyDesc = "100% weekly capacity available. Active and uncapped for current period.";
+        var claudeWeeklyDesc = claudeQ.weeklyDescription || "";
+        if (!claudeWeeklyDesc) {
+          if (isClaudeWeeklyExhausted) {
+            claudeWeeklyDesc = "Weekly cap reached! Account locked until " + formatResetTime(claudeWeeklyResetSec, claudeQ.weeklyResetTime || claudeQ.resetTime) + ". Automatic failover active.";
+          } else if (isClaude5hExhausted) {
+            claudeWeeklyDesc = "5-hour limit active; weekly limit remains healthy. Next cycle in " + formatResetTime(claude5hResetSec, claudeQ.resetTime) + ".";
+          } else if (claudeWeeklyPct < 100) {
+            claudeWeeklyDesc = "Weekly window healthy. " + (a.tokens7d || 0).toLocaleString() + " tokens processed across " + (a.requests7d || 0) + " requests this week.";
+          } else {
+            claudeWeeklyDesc = "100% weekly capacity available. Active and uncapped for current period.";
+          }
         }
 
         // Gemini Limits
-        var isGeminiWeeklyExhausted = geminiQ.resetSeconds > 86400;
-        var isGemini5hExhausted = (geminiQ.remainingPercentage <= 0 || !geminiQ.remainingPercentage) && geminiQ.resetSeconds > 0 && geminiQ.resetSeconds <= 86400;
+        var isGeminiWeeklyExhausted = (typeof geminiQ.weeklyPercentage === "number" && geminiQ.weeklyPercentage <= 0) || geminiQ.resetSeconds > 86400 || ((geminiQ.weeklyResetSeconds || 0) > 86400 && typeof geminiQ.weeklyPercentage === "number" && geminiQ.weeklyPercentage <= 0);
+        var isGemini5hExhausted = ((geminiQ.remainingPercentage <= 0 || !geminiQ.remainingPercentage) && geminiQ.resetSeconds > 0 && geminiQ.resetSeconds <= 86400);
         var gemini5hResetSec = (geminiQ.resetSeconds > 0 && geminiQ.resetSeconds <= 86400) ? geminiQ.resetSeconds : 0;
-        var geminiWeeklyResetSec = isGeminiWeeklyExhausted ? geminiQ.resetSeconds : globalWeeklyResetSec;
+        var geminiWeeklyResetSec = (geminiQ.weeklyResetSeconds && geminiQ.weeklyResetSeconds > 0) ? geminiQ.weeklyResetSeconds : (isGeminiWeeklyExhausted ? geminiQ.resetSeconds : globalWeeklyResetSec);
 
-        var gemini5hPct = (isGemini5hExhausted || isGeminiWeeklyExhausted) ? 0 : (typeof geminiQ.remainingPercentage === "number" ? Math.round(geminiQ.remainingPercentage) : 100);
-        var geminiWeeklyPct = isGeminiWeeklyExhausted ? 0 : (isGemini5hExhausted ? 75 : (gemini5hPct < 100 ? Math.min(98, Math.max(50, Math.round(100 - ((100 - gemini5hPct) * 0.48)))) : 100));
+        var gemini5hPct = (isGemini5hExhausted || isGeminiWeeklyExhausted) ? 0 : (typeof geminiQ.remainingPercentage === "number" ? geminiQ.remainingPercentage : 100);
+        var geminiWeeklyPct = (typeof geminiQ.weeklyPercentage === "number") ? geminiQ.weeklyPercentage : (isGeminiWeeklyExhausted ? 0 : 100);
 
-        var gemini5hDesc = "";
-        if (isGemini5hExhausted) {
-          gemini5hDesc = "You have hit your 5-hour limit, it will refresh in " + formatCockpitTime(gemini5hResetSec) + ".";
-        } else if (gemini5hPct < 100) {
-          gemini5hDesc = "You have used some of your 5-hour limit, it will fully refresh in " + formatCockpitTime(gemini5hResetSec) + ".";
-        } else {
-          gemini5hDesc = "100% capacity available. Ready for high-throughput generation.";
+        var gemini5hDesc = geminiQ.description || "";
+        if (!gemini5hDesc) {
+          if (isGeminiWeeklyExhausted) {
+            gemini5hDesc = "Weekly limit reached — Gemini rolling limit is locked until weekly reset.";
+          } else if (isGemini5hExhausted) {
+            gemini5hDesc = "You have hit your 5-hour limit, it will refresh in " + formatResetTime(gemini5hResetSec, geminiQ.resetTime) + ".";
+          } else if (gemini5hPct < 100) {
+            gemini5hDesc = "Rolling 5-hour window: " + gemini5hPct.toFixed(1) + "% capacity available (" + (geminiQ.usedTokens || 0).toLocaleString() + " tokens used).";
+          } else {
+            gemini5hDesc = "100% capacity available. Ready for high-throughput generation.";
+          }
         }
 
-        var geminiWeeklyDesc = "";
-        if (isGeminiWeeklyExhausted) {
-          geminiWeeklyDesc = "You have hit your weekly limit, it will fully refresh in " + formatCockpitTime(geminiWeeklyResetSec) + ".";
-        } else if (isGemini5hExhausted) {
-          geminiWeeklyDesc = "You have hit your 5-hour limit, so the weekly limit does not currently apply. Your 5-hour limit will refresh in " + formatCockpitTime(gemini5hResetSec) + ".";
-        } else {
-          geminiWeeklyDesc = "You have used some of your weekly limit, it will fully refresh in " + formatCockpitTime(geminiWeeklyResetSec) + ".";
+        var geminiWeeklyDesc = geminiQ.weeklyDescription || "";
+        if (!geminiWeeklyDesc) {
+          if (isGeminiWeeklyExhausted) {
+            geminiWeeklyDesc = "Weekly cap reached! Account locked until " + formatResetTime(geminiWeeklyResetSec, geminiQ.weeklyResetTime || geminiQ.resetTime) + ". Automatic failover active.";
+          } else if (isGemini5hExhausted) {
+            geminiWeeklyDesc = "5-hour limit active; weekly limit remains healthy. Next cycle in " + formatResetTime(gemini5hResetSec, geminiQ.resetTime) + ".";
+          } else {
+            geminiWeeklyDesc = "Weekly window healthy. 1,000,000 token context window available.";
+          }
         }
+
+        var isAccountExhausted = isClaudeWeeklyExhausted || isGeminiWeeklyExhausted || isClaude5hExhausted || isGemini5hExhausted || isCooldown;
+
+        var statusBadge = '<span class="badge badge-celadon">🟢 Active (Ready)</span>';
+        if (isClaudeWeeklyExhausted || isGeminiWeeklyExhausted) {
+          statusBadge = '<span class="badge badge-rose" style="border: 1px solid #f43f5e; box-shadow: 0 0 8px rgba(244,63,94,0.4);">⛔ Weekly Capped</span>';
+        } else if (isCooldown || isClaude5hExhausted || isGemini5hExhausted) {
+          statusBadge = '<span class="badge badge-amber" style="border: 1px solid #f59e0b; box-shadow: 0 0 8px rgba(245,158,11,0.3);">⏳ Rate Limited (5h)</span>';
+        }
+
+        var cardStyle = isAccountExhausted
+          ? 'background: rgba(22, 14, 19, 0.85); border: 2px solid #f43f5e; border-top: 2px solid #fb7185; box-shadow: 0 0 20px rgba(244, 63, 94, 0.25), inset 0 0 15px rgba(244, 63, 94, 0.06); border-radius: 14px; padding: 18px; margin-bottom: 14px; transition: all 0.3s ease;'
+          : 'background: rgba(13, 17, 24, 0.7); border: 1px solid var(--card-border); border-top: 1px solid var(--card-border-highlight); border-radius: 14px; padding: 18px; margin-bottom: 14px; transition: all 0.3s ease;';
+
+        var avatarStyle = isAccountExhausted
+          ? 'width:36px; height:36px; border-radius:10px; background: rgba(244, 63, 94, 0.15); border: 1.5px solid rgba(244, 63, 94, 0.6); display:flex; align-items:center; justify-content:center; font-size:18px;'
+          : 'width:36px; height:36px; border-radius:10px; background: rgba(45,212,191,0.08); border: 1px solid var(--celadon-border); display:flex; align-items:center; justify-content:center; font-size:18px;';
 
         return [
-          '<div style="background: rgba(13, 17, 24, 0.7); border: 1px solid var(--card-border); border-top: 1px solid var(--card-border-highlight); border-radius: 14px; padding: 18px; margin-bottom: 14px;">',
+          '<div style="' + cardStyle + '">',
             '<div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px; margin-bottom: 14px;">',
               '<div style="display:flex; align-items:center; gap:12px;">',
-                '<div style="width:36px; height:36px; border-radius:10px; background: rgba(45,212,191,0.08); border: 1px solid var(--celadon-border); display:flex; align-items:center; justify-content:center; font-size:18px;">',
-                  (isCooldown ? "⏳" : "🟢"),
+                '<div style="' + avatarStyle + '">',
+                  (isClaudeWeeklyExhausted || isGeminiWeeklyExhausted ? "⛔" : (isCooldown || isClaude5hExhausted || isGemini5hExhausted ? "⏳" : "🟢")),
                 '</div>',
                 '<div>',
                   '<div style="font-weight:700; font-size:14px; color:var(--slate-50);">' + escapeHtml(a.email) + '</div>',
@@ -1214,9 +1303,7 @@ export function renderDashboardHtml(): string {
               '</div>',
 
               '<div style="display:flex; align-items:center; gap:8px;">',
-                '<span class="' + (isCooldown ? "badge badge-amber" : "badge badge-celadon") + '">',
-                  (isCooldown ? "⏳ Rate Limited" : "🟢 Active (Ready)"),
-                '</span>',
+                statusBadge,
                 '<button class="btn btn-danger" style="padding:5px 12px; font-size:12px;" data-email="' + escapeHtml(a.email) + '" onclick="deleteAccount(this.dataset.email)">🗑️ Remove</button>',
               '</div>',
             '</div>',
@@ -1233,8 +1320,8 @@ export function renderDashboardHtml(): string {
                   '</div>',
                   '<span class="badge badge-slate" style="font-size:10px; padding:2px 8px; border-color:rgba(56,189,248,0.3); color:#38bdf8 !important;">' + escapeHtml(lastGoogleModel) + '</span>',
                 '</div>',
-                renderQuotaRow("Weekly Limit Remaining", geminiWeeklyPct, geminiWeeklyDesc, geminiWeeklyResetSec, isGeminiWeeklyExhausted),
-                renderQuotaRow("Five Hour Limit Remaining", gemini5hPct, gemini5hDesc, gemini5hResetSec, isGemini5hExhausted),
+                renderQuotaRow("Weekly Limit Remaining", geminiWeeklyPct, geminiWeeklyDesc, geminiWeeklyResetSec, isGeminiWeeklyExhausted, { type: "weekly", requests: a.requests7d || 0, tokens: a.tokens7d || 0, maxTokens: geminiQ.maxTokens || 1048576 }, geminiQ.weeklyResetTime || (isGeminiWeeklyExhausted ? geminiQ.resetTime : undefined)),
+                renderQuotaRow("Five Hour Limit Remaining", gemini5hPct, gemini5hDesc, gemini5hResetSec, isGemini5hExhausted, { type: "5h", maxTokens: geminiQ.maxTokens || 1048576, remainingTokens: isGemini5hExhausted ? 0 : (geminiQ.remainingTokens ?? 1048576), usedTokens: isGemini5hExhausted ? (geminiQ.maxTokens || 1048576) : (geminiQ.usedTokens || 0) }, geminiQ.resetTime),
               '</div>',
 
               '<!-- CLAUDE AND GPT MODELS CARD -->',
@@ -1246,8 +1333,8 @@ export function renderDashboardHtml(): string {
                   '</div>',
                   '<span class="badge badge-slate" style="font-size:10px; padding:2px 8px; border-color:rgba(42,245,39,0.3); color:#2AF527 !important;">' + escapeHtml(lastAnthropicModel) + '</span>',
                 '</div>',
-                renderQuotaRow("Weekly Limit Remaining", claudeWeeklyPct, claudeWeeklyDesc, claudeWeeklyResetSec, isClaudeWeeklyExhausted),
-                renderQuotaRow("Five Hour Limit Remaining", claude5hPct, claude5hDesc, claude5hResetSec, isClaude5hExhausted),
+                renderQuotaRow("Weekly Limit Remaining", claudeWeeklyPct, claudeWeeklyDesc, claudeWeeklyResetSec, isClaudeWeeklyExhausted, { type: "weekly", requests: a.requests7d || 0, tokens: a.tokens7d || 0, maxTokens: claudeQ.maxTokens || 250000 }, claudeQ.weeklyResetTime || (isClaudeWeeklyExhausted ? claudeQ.resetTime : undefined)),
+                renderQuotaRow("Five Hour Limit Remaining", claude5hPct, claude5hDesc, claude5hResetSec, isClaude5hExhausted, { type: "5h", maxTokens: claudeQ.maxTokens || 250000, remainingTokens: (isClaude5hExhausted || isClaudeWeeklyExhausted) ? 0 : (claudeQ.remainingTokens ?? 250000), usedTokens: (isClaude5hExhausted || isClaudeWeeklyExhausted) ? (claudeQ.maxTokens || 250000) : (claudeQ.usedTokens || 0) }, claudeQ.resetTime),
               '</div>',
 
             '</div>',
@@ -1486,13 +1573,27 @@ export function renderDashboardHtml(): string {
       });
     })();
 
+    var countdownSec = 20;
+    function updateCountdown() {
+      countdownSec--;
+      var el = document.getElementById("refreshTimer");
+      if (el) el.textContent = countdownSec + "s";
+      if (countdownSec <= 0) {
+        countdownSec = 20;
+        refreshAll();
+      }
+    }
+
     window.refreshAll = function() {
+      countdownSec = 20;
+      var el = document.getElementById("refreshTimer");
+      if (el) el.textContent = "20s";
       loadStats();
       loadData();
     };
 
     refreshAll();
-    setInterval(loadStats, 5000);
+    setInterval(updateCountdown, 1000);
   })();
 </script>
 </body>

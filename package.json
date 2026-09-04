@@ -1,7 +1,7 @@
 {
-  "name": "antigravity-router",
+  "name": "antigravity-cursor-proxy",
   "version": "1.0.0",
-  "description": "High-Performance AI Gateway, Multi-Account Quota Router & Failover Proxy for Google Antigravity (Gemini 3.8 / 3.6, Claude 3.7 Sonnet & Thinking) with Live Cockpit Telemetry",
+  "description": "Local OpenAI-compatible proxy for Antigravity",
   "type": "module",
   "scripts": {
     "build": "tsc",
@@ -19,11 +19,5 @@
     "@types/node": "^24.10.1",
     "tsx": "^4.19.2",
     "typescript": "^5.0.0"
-  },
-  "author": "Tomasz Pasieka",
-  "license": "MIT",
-  "repository": {
-    "type": "git",
-    "url": "https://github.com/TomBelfast/antigravity-router.git"
   }
 }
