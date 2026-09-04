@@ -1,0 +1,25 @@
+[Unit]
+Description=OmniRoute AI gateway
+Documentation=https://github.com/diegosouzapw/OmniRoute
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+# nvm-managed Node 24 (see omniroute/install.sh)
+Environment=NVM_DIR=/root/.nvm
+Environment=PATH=/root/.nvm/versions/node/v24.20.0/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+Environment=DATA_DIR=/root/.omniroute
+# Bind loopback only — antigravity-router / local CLIs reach it via localhost.
+# Drop this (or set 0.0.0.0) to expose it on the LAN, and then set REQUIRE_API_KEY=true.
+Environment=OMNIROUTE_SERVER_HOST=127.0.0.1
+Environment=PORT=20128
+# V8 heap — 8 GiB covers a single coding agent on /v1/responses.
+Environment=OMNIROUTE_MEMORY_MB=8192
+ExecStart=/root/.nvm/versions/node/v24.20.0/bin/omniroute
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
