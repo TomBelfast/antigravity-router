@@ -122,6 +122,14 @@ Once Antigravity Router is running and you have generated an API key from the We
 
 ---
 
+## Operations
+
+For the `api.aihub.ovh` deployment, see [quota source rules, regression checks, incident history, and proxy CA configuration](docs/operations.md). This deployment runs as `antigravity-proxy.service` from `/opt/antigravity-proxy` on port `3321`.
+
+---
+
+Dashboard quotas must use `ANTIGRAVITY_ENDPOINT_DAILY` independently of the generation endpoint list. Production returned a different Gemini allowance (81.1%) during the September 8 incident. Read the current rules in `docs/operations.md` before changing quota retrieval.
+
 ## 🔒 Security
 
 - All OAuth tokens and client keys are stored locally in the persistent `data/` directory.

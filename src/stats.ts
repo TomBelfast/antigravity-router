@@ -31,13 +31,33 @@ export interface KeyStat {
   keyId: string;
   keyName: string;
   requests: number;
+  promptTokens: number;
+  completionTokens: number;
   totalTokens: number;
 }
 
 export interface AccountStat {
   email: string;
   requests: number;
+  promptTokens: number;
+  completionTokens: number;
   totalTokens: number;
+}
+
+export interface BurnRateStats {
+  tokens24h: number;
+  requests24h: number;
+  tokens7d: number;
+  requests7d: number;
+  dailyAvg7d: number;
+  allTimeDailyAvg: number;
+  effectiveDailyBurn: number;
+  source: "24h" | "7d_avg" | "all_time_avg" | "idle";
+  tokensPerHour: number;
+  claudeTokens24h: number;
+  geminiTokens24h: number;
+  claudeDailyAvg7d: number;
+  geminiDailyAvg7d: number;
 }
 
 export interface StatsFilterOptions {
@@ -77,6 +97,7 @@ export interface StatsResponse {
   availableKeys: Array<{ id: string; name: string }>;
   availableModels: string[];
   availableAccounts: string[];
+  burnRate: BurnRateStats;
 }
 
 const USAGE_FILE = process.env.USAGE_FILE || join(getConfigDir(), "usage.json");
@@ -228,8 +249,8 @@ export function getUsageStats(filter: StatsFilterOptions): StatsResponse {
   let estimatedCostSavedUsd = 0;
 
   const modelMap: Record<string, { requests: number; promptTokens: number; completionTokens: number; totalTokens: number; totalLatencyMs: number }> = {};
-  const keyMap: Record<string, { keyId: string; keyName: string; requests: number; totalTokens: number }> = {};
-  const accountMap: Record<string, { email: string; requests: number; totalTokens: number }> = {};
+  const keyMap: Record<string, KeyStat> = {};
+  const accountMap: Record<string, AccountStat> = {};
 
   for (const item of filtered) {
     totalRequests += 1;
@@ -255,17 +276,21 @@ export function getUsageStats(filter: StatsFilterOptions): StatsResponse {
     const kId = item.keyId || "direct";
     const kName = item.keyName || "Default / Direct";
     if (!keyMap[kId]) {
-      keyMap[kId] = { keyId: kId, keyName: kName, requests: 0, totalTokens: 0 };
+      keyMap[kId] = { keyId: kId, keyName: kName, requests: 0, promptTokens: 0, completionTokens: 0, totalTokens: 0 };
     }
     keyMap[kId].requests += 1;
+    keyMap[kId].promptTokens += item.promptTokens;
+    keyMap[kId].completionTokens += item.completionTokens;
     keyMap[kId].totalTokens += item.totalTokens;
 
     // Account breakdown
     const accEmail = item.accountEmail || "Nieznane";
     if (!accountMap[accEmail]) {
-      accountMap[accEmail] = { email: accEmail, requests: 0, totalTokens: 0 };
+      accountMap[accEmail] = { email: accEmail, requests: 0, promptTokens: 0, completionTokens: 0, totalTokens: 0 };
     }
     accountMap[accEmail].requests += 1;
+    accountMap[accEmail].promptTokens += item.promptTokens;
+    accountMap[accEmail].completionTokens += item.completionTokens;
     accountMap[accEmail].totalTokens += item.totalTokens;
   }
 
@@ -335,6 +360,78 @@ export function getUsageStats(filter: StatsFilterOptions): StatsResponse {
       latencyData.push(reqs > 0 ? Math.round(latSum / reqs) : 0);
     }
   }
+  // Calculate burn rates across all entries (fleet total)
+  const oneDayAgo = now - 24 * 60 * 60 * 1000;
+  const sevenDaysAgo = now - 7 * 24 * 60 * 60 * 1000;
+
+  let tokens24h = 0;
+  let requests24h = 0;
+  let claudeTokens24h = 0;
+  let geminiTokens24h = 0;
+
+  let tokens7d = 0;
+  let requests7d = 0;
+  let claudeTokens7d = 0;
+  let geminiTokens7d = 0;
+
+  let tokensAllTime = 0;
+
+  for (const item of allEntries) {
+    tokensAllTime += item.totalTokens;
+    const m = (item.model || "").toLowerCase();
+    const isClaude = m.includes("claude") || m.includes("sonnet") || m.includes("opus");
+    const isGemini = m.includes("gemini") || m.includes("flash") || m.includes("pro");
+
+    if (item.timestamp >= oneDayAgo) {
+      tokens24h += item.totalTokens;
+      requests24h += 1;
+      if (isClaude) claudeTokens24h += item.totalTokens;
+      if (isGemini) geminiTokens24h += item.totalTokens;
+    }
+    if (item.timestamp >= sevenDaysAgo) {
+      tokens7d += item.totalTokens;
+      requests7d += 1;
+      if (isClaude) claudeTokens7d += item.totalTokens;
+      if (isGemini) geminiTokens7d += item.totalTokens;
+    }
+  }
+
+  const earliestTimestamp = allEntries.length > 0 ? Math.min(...allEntries.map((e) => e.timestamp)) : now;
+  const totalDaysSpan = Math.max(1, (now - earliestTimestamp) / (24 * 60 * 60 * 1000));
+  const dailyAvg7d = Math.round(tokens7d / Math.min(7, totalDaysSpan));
+  const claudeDailyAvg7d = Math.round(claudeTokens7d / Math.min(7, totalDaysSpan));
+  const geminiDailyAvg7d = Math.round(geminiTokens7d / Math.min(7, totalDaysSpan));
+  const allTimeDailyAvg = Math.round(tokensAllTime / totalDaysSpan);
+
+  let effectiveDailyBurn = 0;
+  let burnRateSource: "24h" | "7d_avg" | "all_time_avg" | "idle" = "idle";
+
+  if (tokens24h > 0) {
+    effectiveDailyBurn = tokens24h;
+    burnRateSource = "24h";
+  } else if (dailyAvg7d > 0) {
+    effectiveDailyBurn = dailyAvg7d;
+    burnRateSource = "7d_avg";
+  } else if (allTimeDailyAvg > 0) {
+    effectiveDailyBurn = allTimeDailyAvg;
+    burnRateSource = "all_time_avg";
+  }
+
+  const burnRate: BurnRateStats = {
+    tokens24h,
+    requests24h,
+    tokens7d,
+    requests7d,
+    dailyAvg7d,
+    allTimeDailyAvg,
+    effectiveDailyBurn,
+    source: burnRateSource,
+    tokensPerHour: Math.round(effectiveDailyBurn / 24),
+    claudeTokens24h,
+    geminiTokens24h,
+    claudeDailyAvg7d,
+    geminiDailyAvg7d,
+  };
 
   // Last 25 logs sorted descending
   const recentLogs = [...filtered]
@@ -372,5 +469,6 @@ export function getUsageStats(filter: StatsFilterOptions): StatsResponse {
     availableKeys,
     availableModels,
     availableAccounts,
+    burnRate,
   };
 }

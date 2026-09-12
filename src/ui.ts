@@ -220,6 +220,25 @@ export function renderDashboardHtml(): string {
       gap: 20px; margin-bottom: 24px;
     }
     @media (max-width: 960px) { .charts-grid { grid-template-columns: 1fr; } }
+    .donut-grid {
+      display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+      gap: 18px; margin-bottom: 24px;
+    }
+    .runway-hero {
+      background: linear-gradient(135deg, rgba(15, 23, 42, 0.75) 0%, rgba(13, 16, 23, 0.85) 100%);
+      border: 1px solid rgba(42, 245, 39, 0.25);
+      box-shadow: 0 8px 32px rgba(0, 0, 0, 0.35);
+      border-radius: var(--radius-md);
+      padding: 24px; margin-bottom: 24px; position: relative; overflow: hidden;
+    }
+    .runway-grid {
+      display: grid; grid-template-columns: 1.3fr 1.7fr 140px; gap: 24px; align-items: center;
+    }
+    @media (max-width: 1024px) {
+      .runway-grid { grid-template-columns: 1fr !important; gap: 20px !important; }
+      .runway-grid > div { border-right: none !important; padding-right: 0 !important; border-bottom: 1px solid rgba(255, 255, 255, 0.08); padding-bottom: 16px; }
+      .runway-grid > div:last-child { border-bottom: none !important; padding-bottom: 0; }
+    }
     .chart-card { padding: 22px; }
     .chart-header {
       display: flex; justify-content: space-between; align-items: center;
@@ -397,9 +416,9 @@ export function renderDashboardHtml(): string {
     <div style="display:flex; align-items:center; gap:14px; flex-wrap:wrap;">
       <span style="font-size:11px; font-weight:700; color:var(--slate-400); text-transform:uppercase; letter-spacing:0.8px;">Time Range:</span>
       <div class="time-tabs">
-        <button class="tab-btn active" id="tab24h" onclick="setTimeRange('24h')">24 Hours</button>
+        <button class="tab-btn" id="tab24h" onclick="setTimeRange('24h')">24 Hours</button>
         <button class="tab-btn" id="tab7d" onclick="setTimeRange('7d')">7 Days</button>
-        <button class="tab-btn" id="tab30d" onclick="setTimeRange('30d')">30 Days</button>
+        <button class="tab-btn active" id="tab30d" onclick="setTimeRange('30d')">30 Days</button>
         <button class="tab-btn" id="tabAll" onclick="setTimeRange('all')">All Time</button>
       </div>
     </div>
@@ -477,33 +496,183 @@ export function renderDashboardHtml(): string {
   </div>
 
   <!-- CHARTS ROW -->
-  <div class="charts-grid">
-    <div class="glass-panel chart-card">
-      <div class="chart-header">
-        <div class="chart-title">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--celadon)" stroke-width="2"><path d="M3 3v18h18"/><path d="m19 9-5 5-4-4-3 3"/></svg>
-          Usage Dynamics Over Time
+  <!-- UNIFIED FLEET TOKEN RUNWAY & PREDICTION (WSZYSTKIE KONTA RAZEM) -->
+  <!-- CAPACITY SIZING & VERDICT HERO PANEL (CZY WYSTARCZY KONT) -->
+  <div class="glass-panel runway-hero">
+    <div style="position: absolute; top: 0; right: 0; width: 350px; height: 100%; background: radial-gradient(circle at 100% 0%, rgba(42, 245, 39, 0.12) 0%, transparent 70%); pointer-events: none;"></div>
+
+    <!-- HEADER -->
+    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 18px; flex-wrap: wrap; gap: 12px;">
+      <div style="display: flex; align-items: center; gap: 12px;">
+        <div id="verdictIconBox" style="width: 42px; height: 42px; border-radius: 12px; background: rgba(42, 245, 39, 0.14); border: 1px solid var(--celadon-border); display: flex; align-items: center; justify-content: center;">
+          <svg id="verdictIcon" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="var(--celadon)" stroke-width="2.5"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
         </div>
-        <div class="time-tabs">
-          <button class="tab-btn active" id="metricReqBtn" onclick="switchTimelineMetric('requests')">Requests</button>
-          <button class="tab-btn" id="metricTokBtn" onclick="switchTimelineMetric('tokens')">Tokens</button>
-          <button class="tab-btn" id="metricLatBtn" onclick="switchTimelineMetric('latency')">Latency (ms)</button>
+        <div>
+          <div style="font-size: 17px; font-weight: 800; color: #fff; letter-spacing: -0.3px; display: flex; align-items: center; gap: 10px;">
+            Centrum Wydolności i Werdykt Floty (Capacity Sizing & Decision)
+            <span id="verdictBadge" class="badge badge-celadon" style="font-size: 11px; padding: 3px 10px;">🟢 Pełna Wydolność</span>
+          </div>
+          <div style="font-size: 12px; color: var(--slate-400); margin-top: 2px;">
+            Weryfikacja: Czy obecne konta wystarczą na Twoje tempo kodowania, czy potrzebujesz dodać więcej?
+          </div>
         </div>
       </div>
-      <div style="position:relative; height:240px;">
-        <canvas id="timelineChart"></canvas>
+      <div id="fleetHealthBadge" style="display: inline-flex; align-items: center; gap: 6px; padding: 5px 12px; border-radius: 8px; background: rgba(42, 245, 39, 0.08); border: 1px solid rgba(42, 245, 39, 0.25); font-size: 12px; font-weight: 700; color: #2AF527;">
+        🟢 <span id="fleetActiveCountLabel">14/14 kont aktywnych</span>
       </div>
     </div>
 
+    <!-- MAIN VERDICT CALLOUT BANNER -->
+    <div id="verdictBanner" style="padding: 16px 20px; border-radius: 12px; background: linear-gradient(135deg, rgba(245, 158, 11, 0.12) 0%, rgba(15, 23, 42, 0.7) 100%); border: 1px solid rgba(245, 158, 11, 0.4); margin-bottom: 22px; box-shadow: 0 4px 20px rgba(0,0,0,0.25);">
+      <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px;">
+        <div style="flex: 1; min-width: 280px;">
+          <div id="verdictHeadline" style="font-size: 18px; font-weight: 900; color: #f59e0b; letter-spacing: -0.3px;">
+            🟡 UWAGA: MOCNO OBCIĄŻONA FLOTA (Claude: realnie 5 z 14 kont)
+          </div>
+          <div id="verdictDescription" style="font-size: 13px; color: var(--slate-200); margin-top: 6px; line-height: 1.5;">
+            Ładowanie statusu floty...
+          </div>
+        </div>
+        <div id="verdictActionChip" style="padding: 8px 16px; border-radius: 8px; background: rgba(245, 158, 11, 0.2); border: 1px solid #f59e0b; font-size: 12px; font-weight: 800; color: #fde68a; letter-spacing: 0.3px; white-space: nowrap;">
+          ⚡ ZALECANY BUFOR +3-4 KONTA
+        </div>
+      </div>
+    </div>
+
+    <!-- 3-COLUMN RUNWAY & SIZING GRID -->
+    <div class="runway-grid">
+      <!-- COL 1: Realna Pojemność Floty (Claude vs Gemini) -->
+      <div style="border-right: 1px solid rgba(255, 255, 255, 0.08); padding-right: 18px;">
+        <div style="font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.8px; color: var(--slate-400); margin-bottom: 6px;">
+          Realna Pojemność Tygodniowa Floty
+        </div>
+        <div style="display: flex; align-items: baseline; gap: 8px;">
+          <span id="sizingTotalAccounts" style="font-size: 30px; font-weight: 900; color: #fff; font-family: 'JetBrains Mono', monospace;">14</span>
+          <span style="font-size: 12.5px; color: var(--slate-400);">podpiętych kont Google</span>
+        </div>
+        <div style="margin-top: 8px; font-size: 12px; color: var(--slate-300); line-height: 1.65;">
+          • Moc Claude: <strong id="claudeMocLabel" style="color:#f59e0b; font-family:'JetBrains Mono',monospace;">~5.0 pełnych kont (35.6%)</strong><br>
+          • Moc Gemini: <strong id="geminiMocLabel" style="color:#38bdf8; font-family:'JetBrains Mono',monospace;">~7.7 pełnych kont (55.1%)</strong><br>
+          • Stan krytyczny (≤10%): <strong id="critCountLabel" style="color:#f43f5e; font-family:'JetBrains Mono',monospace;">4 konta</strong> czekają na reset
+        </div>
+        <div style="margin-top: 10px; display: flex; gap: 8px; flex-wrap: wrap;">
+          <span class="badge badge-slate" id="claudeRunwayBadge" style="font-size: 10.5px; padding: 2px 8px; border-color: rgba(245,158,11,0.4); color: #f59e0b !important;">Claude: ~5.0/14 kont</span>
+          <span class="badge badge-slate" id="geminiRunwayBadge" style="font-size: 10.5px; padding: 2px 8px; border-color: rgba(56,189,248,0.4); color: #38bdf8 !important;">Gemini: ~7.7/14 kont</span>
+        </div>
+      </div>
+
+      <!-- COL 2: Harmonogram Regeneracji Kont (Fale Resetów) -->
+      <div style="display: flex; flex-direction: column; gap: 12px; border-right: 1px solid rgba(255, 255, 255, 0.08); padding-right: 18px;">
+        <div>
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+            <span style="font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.8px; color: var(--slate-400);">Średni Zapas Tygodniowy Floty</span>
+            <span style="font-size: 13px; font-weight: 800; color: #fff; font-family: 'JetBrains Mono', monospace;"><span id="fleetTotalRemaining">--</span> / <span id="fleetTotalMax">--</span> (<span id="fleetRemainingPct" style="color:#f59e0b;">--%</span>)</span>
+          </div>
+          <div style="height: 8px; width: 100%; background: rgba(255,255,255,0.06); border-radius: 999px; overflow: hidden;">
+            <div id="fleetCapacityBar" style="height: 100%; width: 45%; background: linear-gradient(90deg, #d97706, #f59e0b); transition: width 0.6s ease; box-shadow: 0 0 8px rgba(245,158,11,0.4);"></div>
+          </div>
+        </div>
+        <div>
+          <div style="font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.8px; color: var(--slate-400); margin-bottom: 4px;">
+            Harmonogram Odnawiania Kont (Fale Regeneracji):
+          </div>
+          <div id="resetWavesDetail" style="font-size: 11.5px; color: var(--slate-300); font-family: 'JetBrains Mono', monospace; line-height: 1.55;">
+            • Za <strong>2.7–3.2 dni:</strong> +3 konta zregenerują się do 100%<br>
+            • Za <strong>3.7–3.8 dni:</strong> +4 konta zregenerują się do 100%<br>
+            • Za <strong>4.9–7.0 dni:</strong> +7 kont zregeneruje się do 100%
+          </div>
+        </div>
+      </div>
+
+      <!-- COL 3: Circular Fuel Gauge (Zapas Tygodniowy) -->
+      <div style="display: flex; flex-direction: column; align-items: center; justify-content: center; position: relative;">
+        <div style="position: relative; width: 110px; height: 110px;">
+          <canvas id="fleetGaugeChart"></canvas>
+          <div style="position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); text-align: center; pointer-events: none;">
+            <div id="gaugeCenterText" style="font-size: 16px; font-weight: 900; color: #f59e0b; font-family: 'JetBrains Mono', monospace;">--%</div>
+            <div style="font-size: 8px; color: var(--slate-400); text-transform: uppercase; letter-spacing: 0.5px;">Pojemność</div>
+          </div>
+        </div>
+        <div id="nextResetCallout" style="font-size: 11.5px; font-weight: 700; color: #38bdf8; margin-top: 6px; text-align: center; font-family: 'JetBrains Mono', monospace;">
+          Najbliższy reset: za ~2.7d
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- USAGE DYNAMICS OVER TIME (LINE CHART) -->
+  <div class="glass-panel chart-card" style="margin-bottom: 24px;">
+    <div class="chart-header">
+      <div class="chart-title">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--celadon)" stroke-width="2"><path d="M3 3v18h18"/><path d="m19 9-5 5-4-4-3 3"/></svg>
+        Usage Dynamics Over Time (Dynamika zużycia w czasie)
+      </div>
+      <div class="time-tabs">
+        <button class="tab-btn active" id="metricReqBtn" onclick="switchTimelineMetric('requests')">Requests</button>
+        <button class="tab-btn" id="metricTokBtn" onclick="switchTimelineMetric('tokens')">Tokens</button>
+        <button class="tab-btn" id="metricLatBtn" onclick="switchTimelineMetric('latency')">Latency (ms)</button>
+      </div>
+    </div>
+    <div style="position:relative; height:240px;">
+      <canvas id="timelineChart"></canvas>
+    </div>
+  </div>
+
+  <!-- CIRCULAR / DONUT CHARTS (4 WYKRESY KOŁOWE) -->
+  <div class="donut-grid">
+    <!-- CHART 1: Model Distribution -->
     <div class="glass-panel chart-card">
       <div class="chart-header">
         <div class="chart-title">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--celadon)" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 2a10 10 0 0 1 10 10h-10z"/></svg>
-          Model Distribution
+          Rozkład Modeli (Models)
         </div>
+        <span id="modelBadge" class="badge badge-slate" style="font-size:10px; padding:2px 8px;">0 modeli</span>
       </div>
-      <div style="position:relative; height:240px;">
+      <div style="position:relative; height:220px;">
         <canvas id="modelChart"></canvas>
+      </div>
+    </div>
+
+    <!-- CHART 2: API Keys & Developers -->
+    <div class="glass-panel chart-card">
+      <div class="chart-header">
+        <div class="chart-title">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#38bdf8" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+          Klucze API / Developerzy
+        </div>
+        <span id="keyBadge" class="badge badge-slate" style="font-size:10px; padding:2px 8px;">0 kluczy</span>
+      </div>
+      <div style="position:relative; height:220px;">
+        <canvas id="keyChart"></canvas>
+      </div>
+    </div>
+
+    <!-- CHART 3: Google Accounts Load Balance -->
+    <div class="glass-panel chart-card">
+      <div class="chart-header">
+        <div class="chart-title">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#818cf8" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+          Obciążenie Kont Google
+        </div>
+        <span id="accountBadge" class="badge badge-slate" style="font-size:10px; padding:2px 8px;">0 kont</span>
+      </div>
+      <div style="position:relative; height:220px;">
+        <canvas id="accountChart"></canvas>
+      </div>
+    </div>
+
+    <!-- CHART 4: Prompt vs Completion Ratio -->
+    <div class="glass-panel chart-card">
+      <div class="chart-header">
+        <div class="chart-title">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#f59e0b" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+          Stosunek Prompt vs Output
+        </div>
+        <span id="ratioBadge" class="badge badge-slate" style="font-size:10px; padding:2px 8px;">0 tok</span>
+      </div>
+      <div style="position:relative; height:220px;">
+        <canvas id="ratioChart"></canvas>
       </div>
     </div>
   </div>
@@ -682,7 +851,7 @@ export function renderDashboardHtml(): string {
       <button class="close-btn" onclick="closeAccountModal()">&times;</button>
     </div>
     <div style="font-size:13px; color:var(--slate-300); margin-bottom:16px; line-height:1.5;">
-      Click the button below to authorize Antigravity Gateway with your Google Account, then copy the authorization code and paste it here:
+      Open Google authorization and approve access. Google will redirect to <strong>http://localhost:51121/oauth-callback</strong>. On your computer this page may show a connection error: copy the <strong>entire address from the address bar</strong>, return here, and paste it below. The dashboard does not receive this redirect automatically.
     </div>
     <div style="margin-bottom:16px;">
       <a id="oauthLinkBtn" href="#" target="_blank" class="btn btn-celadon" style="width:100%; justify-content:center; padding:12px;">
@@ -690,12 +859,12 @@ export function renderDashboardHtml(): string {
       </a>
     </div>
     <div class="form-group">
-      <label class="form-label">2. Paste Authorization Code:</label>
-      <input type="text" id="authCodeInput" class="form-input" placeholder="4/0AWgavdf...">
+      <label class="form-label">2. Paste the full localhost callback URL:</label>
+      <input type="text" id="authCodeInput" class="form-input" placeholder="http://localhost:51121/oauth-callback?state=...&amp;code=..." autocomplete="off">
     </div>
     <div style="display:flex; justify-content:flex-end; gap:10px; margin-top:20px;">
       <button class="btn btn-ghost" onclick="closeAccountModal()">Cancel</button>
-      <button class="btn btn-celadon" onclick="submitAuthCode()">Submit & Connect Account</button>
+      <button id="submitAuthCodeBtn" class="btn btn-celadon" onclick="submitAuthCode()">Submit & Connect Account</button>
     </div>
   </div>
 </div>
@@ -721,11 +890,15 @@ export function renderDashboardHtml(): string {
 <script>
   (function() {
     let adminToken = localStorage.getItem("ag_admin_token") || "";
-    let currentRange = "24h";
+    let currentRange = "30d";
     let activeTimelineMetric = "requests";
     let cachedStats = null;
     let timelineChart = null;
     let modelChart = null;
+    let keyChart = null;
+    let accountChart = null;
+    let ratioChart = null;
+    let fleetGaugeChart = null;
 
     if (window.location.hostname) {
       document.getElementById("displayEndpoint").textContent = window.location.protocol + "//" + window.location.host + "/v1";
@@ -748,8 +921,12 @@ export function renderDashboardHtml(): string {
 
     window.setTimeRange = function(range) {
       currentRange = range;
-      document.querySelectorAll(".time-tabs button[id^='tab']").forEach(b => b.classList.remove("active"));
-      const btn = document.getElementById("tab" + range);
+      document.querySelectorAll(".time-tabs button").forEach(b => {
+        if (b.id && (b.id.startsWith("tab24") || b.id.startsWith("tab7") || b.id.startsWith("tab30") || b.id.startsWith("tabAll") || b.id.startsWith("taball"))) {
+          b.classList.remove("active");
+        }
+      });
+      const btn = document.getElementById("tab" + (range === "all" ? "All" : range));
       if (btn) btn.classList.add("active");
       loadStats();
     };
@@ -879,6 +1056,29 @@ export function renderDashboardHtml(): string {
 
         renderTimeline(timelineNorm);
         renderModelPie(data.models || []);
+        renderKeyPie(data.keys || []);
+        renderAccountPie(data.accounts || []);
+        renderRatioPie(data.totalPromptTokens || 0, data.totalCompletionTokens || 0);
+        if (data.prediction) {
+          renderUnifiedPrediction(data.prediction, data.fleet, data.burnRate);
+        } else if (data.fleet) {
+          var fl = data.fleet;
+          var br = data.burnRate || { effectiveDailyBurn: 0, source: "idle" };
+          var dailyBurn = br.effectiveDailyBurn || 0;
+          var days = dailyBurn > 0 ? (fl.totalRemainingTokens / dailyBurn) : null;
+          renderUnifiedPrediction({
+            totalRemainingTokens: fl.totalRemainingTokens,
+            totalMaxTokens: fl.totalMaxTokens,
+            remainingPercentage: fl.remainingPercentage,
+            dailyBurnRate: dailyBurn,
+            burnRateSource: br.source,
+            daysRemaining: days,
+            activeAccounts: fl.activeAccounts,
+            totalAccounts: fl.totalAccounts,
+            claude: fl.claude,
+            gemini: fl.gemini
+          }, fl, br);
+        }
         renderLiveLogs(data.recentLogs || []);
       } catch (err) {
         console.error("Stats load error:", err);
@@ -953,6 +1153,11 @@ export function renderDashboardHtml(): string {
       if (!breakdown || breakdown.length === 0) {
         breakdown = [{ model: "No data", totalTokens: 1, requests: 0 }];
       }
+      var mBadge = document.getElementById("modelBadge");
+      if (mBadge) {
+        var validM = (breakdown || []).filter(b => b.model && b.model !== "No data" && b.model !== "Brak danych");
+        mBadge.textContent = validM.length + " " + (validM.length === 1 ? "model" : (validM.length < 5 ? "modele" : "modeli"));
+      }
 
       const labels = breakdown.map(b => b.model);
       const dataVals = breakdown.map(b => b.totalTokens || b.requests || 1);
@@ -981,6 +1186,363 @@ export function renderDashboardHtml(): string {
           }
         }
       });
+    }
+
+    function renderKeyPie(keys) {
+      const ctx = document.getElementById("keyChart");
+      if (!ctx) return;
+      if (keyChart) keyChart.destroy();
+
+      if (!keys || keys.length === 0) {
+        keys = [{ keyName: "Brak danych", totalTokens: 1, requests: 0 }];
+      }
+      var kBadge = document.getElementById("keyBadge");
+      if (kBadge) {
+        var validK = (keys || []).filter(k => k.keyName && k.keyName !== "Brak danych");
+        kBadge.textContent = validK.length + " " + (validK.length === 1 ? "klucz" : (validK.length < 5 ? "klucze" : "kluczy"));
+      }
+
+      const labels = keys.map(k => k.keyName || "API Key");
+      const dataVals = keys.map(k => k.totalTokens || k.requests || 1);
+      const colors = ["#38bdf8", "#818cf8", "#2AF527", "#f59e0b", "#f43f5e", "#ec4899", "#14b8a6", "#a855f7"];
+
+      keyChart = new Chart(ctx, {
+        type: "doughnut",
+        data: {
+          labels,
+          datasets: [{
+            data: dataVals,
+            backgroundColor: colors,
+            borderWidth: 2,
+            borderColor: "#0f131a"
+          }]
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          cutout: "70%",
+          plugins: {
+            legend: {
+              position: "bottom",
+              labels: { color: "#94a3b8", font: { size: 10 } }
+            },
+            tooltip: {
+              callbacks: {
+                label: function(item) {
+                  return " " + item.label + ": " + Number(item.raw).toLocaleString() + " tok";
+                }
+              }
+            }
+          }
+        }
+      });
+    }
+
+    function renderAccountPie(accounts) {
+      const ctx = document.getElementById("accountChart");
+      if (!ctx) return;
+      if (accountChart) accountChart.destroy();
+
+      if (!accounts || accounts.length === 0) {
+        accounts = [{ email: "Brak danych", totalTokens: 1, requests: 0 }];
+      }
+      var aBadge = document.getElementById("accountBadge");
+      if (aBadge) {
+        var validA = (accounts || []).filter(a => a.email && a.email !== "Brak danych");
+        aBadge.textContent = validA.length + " " + (validA.length === 1 ? "konto" : (validA.length < 5 ? "konta" : "kont"));
+      }
+
+      const labels = accounts.map(a => (a.email || "").replace("@gmail.com", "").replace("@example.com", ""));
+      const dataVals = accounts.map(a => a.totalTokens || a.requests || 1);
+      const colors = [
+        "#2AF527", "#38bdf8", "#818cf8", "#f59e0b", "#ec4899",
+        "#14b8a6", "#f43f5e", "#a855f7", "#06b6d4", "#84cc16",
+        "#fb923c", "#6366f1", "#eab308", "#10b981", "#d946ef"
+      ];
+
+      accountChart = new Chart(ctx, {
+        type: "doughnut",
+        data: {
+          labels,
+          datasets: [{
+            data: dataVals,
+            backgroundColor: colors,
+            borderWidth: 2,
+            borderColor: "#0f131a"
+          }]
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          cutout: "70%",
+          plugins: {
+            legend: {
+              position: "bottom",
+              labels: { color: "#94a3b8", font: { size: 10 } }
+            },
+            tooltip: {
+              callbacks: {
+                label: function(item) {
+                  return " " + item.label + ": " + Number(item.raw).toLocaleString() + " tok";
+                }
+              }
+            }
+          }
+        }
+      });
+    }
+
+    function renderRatioPie(promptTokens, completionTokens) {
+      const ctx = document.getElementById("ratioChart");
+      if (!ctx) return;
+      if (ratioChart) ratioChart.destroy();
+
+      const total = promptTokens + completionTokens;
+      const dataVals = total > 0 ? [promptTokens, completionTokens] : [1, 1];
+      const promptPct = total > 0 ? ((promptTokens / total) * 100).toFixed(1) : "50";
+      const compPct = total > 0 ? ((completionTokens / total) * 100).toFixed(1) : "50";
+      const labels = [
+        "Prompt / Input (" + promptPct + "%)",
+        "Output / Completion (" + compPct + "%)"
+      ];
+      var rBadge = document.getElementById("ratioBadge");
+      if (rBadge) {
+        var totalTok = promptTokens + completionTokens;
+        rBadge.textContent = formatTokens(totalTok) + " tok";
+      }
+      const colors = ["#38bdf8", "#2AF527"];
+
+      ratioChart = new Chart(ctx, {
+        type: "doughnut",
+        data: {
+          labels,
+          datasets: [{
+            data: dataVals,
+            backgroundColor: colors,
+            borderWidth: 2,
+            borderColor: "#0f131a"
+          }]
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          cutout: "70%",
+          plugins: {
+            legend: {
+              position: "bottom",
+              labels: { color: "#94a3b8", font: { size: 10 } }
+            },
+            tooltip: {
+              callbacks: {
+                label: function(item) {
+                  return " " + item.label + ": " + Number(item.raw).toLocaleString() + " tok";
+                }
+              }
+            }
+          }
+        }
+      });
+    }
+
+    function renderFleetGauge(pred) {
+      var ctx = document.getElementById("fleetGaugeChart");
+      if (!ctx) return;
+      if (fleetGaugeChart) fleetGaugeChart.destroy();
+
+      var remaining = pred.totalRemainingTokens || 0;
+      var totalMax = pred.totalMaxTokens || 1;
+      var used = Math.max(0, totalMax - remaining);
+
+      var status = pred.verdictStatus || "sufficient";
+      var barColor = status === "deficit" ? "#f43f5e" : (status === "warning" ? "#f59e0b" : "#2AF527");
+
+      fleetGaugeChart = new Chart(ctx, {
+        type: "doughnut",
+        data: {
+          labels: ["Dostępna pula floty", "Zużyte / W odnowieniu"],
+          datasets: [{
+            data: [remaining, used],
+            backgroundColor: [barColor, "rgba(255, 255, 255, 0.08)"],
+            borderWidth: 0,
+            hoverOffset: 3
+          }]
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          cutout: "76%",
+          plugins: {
+            legend: { display: false },
+            tooltip: {
+              callbacks: {
+                label: function(item) {
+                  return " " + item.label + ": " + Number(item.raw).toLocaleString() + " tok (" + ((item.raw / totalMax) * 100).toFixed(1) + "%)";
+                }
+              }
+            }
+          }
+        }
+      });
+      var centerEl = document.getElementById("gaugeCenterText");
+      if (centerEl) {
+        var pct = pred.remainingPercentage != null ? pred.remainingPercentage.toFixed(1) : "0.0";
+        centerEl.textContent = pct + "%";
+        centerEl.style.color = barColor;
+      }
+
+      var calloutEl = document.getElementById("nextResetCallout");
+      if (calloutEl && pred.daysToWeeklyReset) {
+        var nextD = pred.daysToWeeklyReset;
+        calloutEl.textContent = "Najbliższy reset: za ~" + nextD + "d";
+        calloutEl.style.color = "#38bdf8";
+      }
+    }
+
+    function formatTokens(count) {
+      if (count == null || isNaN(count)) return "0";
+      if (count >= 1000000) return (count / 1000000).toFixed(2) + "M";
+      if (count >= 1000) return (count / 1000).toFixed(1) + "k";
+      return String(Math.round(count));
+    }
+
+    function renderUnifiedPrediction(pred, fleet, burn) {
+      if (!pred) return;
+
+      var verdictHeadline = document.getElementById("verdictHeadline");
+      var verdictDescription = document.getElementById("verdictDescription");
+      var verdictBadge = document.getElementById("verdictBadge");
+      var verdictBanner = document.getElementById("verdictBanner");
+      var verdictActionChip = document.getElementById("verdictActionChip");
+
+      var sizingTotal = document.getElementById("sizingTotalAccounts");
+      var claudeMocLabel = document.getElementById("claudeMocLabel");
+      var geminiMocLabel = document.getElementById("geminiMocLabel");
+      var critCountLabel = document.getElementById("critCountLabel");
+      var claudeRunwayBadge = document.getElementById("claudeRunwayBadge");
+      var geminiRunwayBadge = document.getElementById("geminiRunwayBadge");
+      var activeCountLabel = document.getElementById("fleetActiveCountLabel");
+
+      var fleetRemainingEl = document.getElementById("fleetTotalRemaining");
+      var fleetMaxEl = document.getElementById("fleetTotalMax");
+      var fleetPctEl = document.getElementById("fleetRemainingPct");
+      var fleetBarEl = document.getElementById("fleetCapacityBar");
+      var resetWavesDetail = document.getElementById("resetWavesDetail");
+
+      if (activeCountLabel) {
+        activeCountLabel.textContent = (pred.activeAccounts || 0) + "/" + (pred.totalAccounts || 0) + " kont aktywnych";
+      }
+
+      // 1. Verdict & Decision Banner
+      var status = pred.verdictStatus || "warning";
+
+      if (verdictHeadline) {
+        verdictHeadline.textContent = pred.verdictTitle || "🟡 UWAGA: MOCNO OBCIĄŻONA FLOTA";
+        verdictHeadline.style.color = status === "deficit" ? "#f43f5e" : (status === "warning" ? "#f59e0b" : "#2AF527");
+      }
+
+      if (verdictDescription) {
+        verdictDescription.textContent = pred.verdictMessage || "Flota jest mocno wyeksploatowana. Zalecany bufor bezpieczeństwa.";
+      }
+
+      if (verdictBadge) {
+        if (status === "deficit") {
+          verdictBadge.className = "badge badge-danger";
+          verdictBadge.textContent = "🔴 Deficyt Floty";
+        } else if (status === "warning") {
+          verdictBadge.className = "badge badge-slate";
+          verdictBadge.style.color = "#f59e0b";
+          verdictBadge.style.borderColor = "rgba(245,158,11,0.4)";
+          verdictBadge.textContent = "🟡 Uwaga: Niski Zapas";
+        } else {
+          verdictBadge.className = "badge badge-celadon";
+          verdictBadge.textContent = "🟢 Pełna Wydolność";
+        }
+      }
+
+      if (verdictBanner) {
+        if (status === "deficit") {
+          verdictBanner.style.background = "linear-gradient(135deg, rgba(244, 63, 94, 0.12) 0%, rgba(15, 23, 42, 0.7) 100%)";
+          verdictBanner.style.borderColor = "rgba(244, 63, 94, 0.4)";
+        } else if (status === "warning") {
+          verdictBanner.style.background = "linear-gradient(135deg, rgba(245, 158, 11, 0.12) 0%, rgba(15, 23, 42, 0.7) 100%)";
+          verdictBanner.style.borderColor = "rgba(245, 158, 11, 0.4)";
+        } else {
+          verdictBanner.style.background = "linear-gradient(135deg, rgba(42, 245, 39, 0.1) 0%, rgba(15, 23, 42, 0.7) 100%)";
+          verdictBanner.style.borderColor = "rgba(42, 245, 39, 0.35)";
+        }
+      }
+
+      if (verdictActionChip) {
+        if (status === "deficit") {
+          verdictActionChip.style.background = "rgba(244, 63, 94, 0.2)";
+          verdictActionChip.style.borderColor = "#f43f5e";
+          verdictActionChip.style.color = "#fda4af";
+          verdictActionChip.textContent = "⚠️ WYMAGANE DODANIE +" + (pred.accountsToAdd || 3) + " KONT";
+        } else if (status === "warning") {
+          verdictActionChip.style.background = "rgba(245, 158, 11, 0.2)";
+          verdictActionChip.style.borderColor = "#f59e0b";
+          verdictActionChip.style.color = "#fde68a";
+          verdictActionChip.textContent = "⚡ ZALECANY BUFOR +3-4 KONTA";
+        } else {
+          verdictActionChip.style.background = "rgba(42, 245, 39, 0.18)";
+          verdictActionChip.style.borderColor = "#2AF527";
+          verdictActionChip.style.color = "#fff";
+          verdictActionChip.textContent = "✅ BRAK POTRZEBY DODAWANIA KONT";
+        }
+      }
+
+      // 2. Col 1: Sizing Stats
+      if (sizingTotal) sizingTotal.textContent = String(pred.totalAccounts || 14);
+
+      if (claudeMocLabel && pred.claude) {
+        var cEq = pred.claude.equivalentFullAccounts != null ? pred.claude.equivalentFullAccounts : 4.8;
+        var cAvg = pred.claude.avgWeeklyPercentage != null ? pred.claude.avgWeeklyPercentage : 34.5;
+        claudeMocLabel.textContent = "~" + cEq + " pełnych kont (" + cAvg + "%)";
+        claudeMocLabel.style.color = cAvg < 40 ? "#f59e0b" : "#2AF527";
+      }
+
+      if (geminiMocLabel && pred.gemini) {
+        var gEq = pred.gemini.equivalentFullAccounts != null ? pred.gemini.equivalentFullAccounts : 7.7;
+        var gAvg = pred.gemini.avgWeeklyPercentage != null ? pred.gemini.avgWeeklyPercentage : 54.9;
+        geminiMocLabel.textContent = "~" + gEq + " pełnych kont (" + gAvg + "%)";
+        geminiMocLabel.style.color = gAvg < 40 ? "#f59e0b" : "#38bdf8";
+      }
+
+      if (critCountLabel && pred.claude && pred.gemini) {
+        var crTotal = (pred.claude.criticalCount || 0) + (pred.gemini.criticalCount || 0);
+        critCountLabel.textContent = crTotal + " kont";
+      }
+
+      if (claudeRunwayBadge) {
+        var cEqVal = pred.claude && pred.claude.equivalentFullAccounts != null ? pred.claude.equivalentFullAccounts : 4.8;
+        claudeRunwayBadge.textContent = "Claude: ~" + cEqVal + "/14 kont";
+      }
+      if (geminiRunwayBadge) {
+        var gEqVal = pred.gemini && pred.gemini.equivalentFullAccounts != null ? pred.gemini.equivalentFullAccounts : 7.7;
+        geminiRunwayBadge.textContent = "Gemini: ~" + gEqVal + "/14 kont";
+      }
+
+      // 3. Col 2: Combined Fleet Quota & Reset Waves
+      if (fleetRemainingEl) fleetRemainingEl.textContent = formatTokens(pred.totalRemainingTokens);
+      if (fleetMaxEl) fleetMaxEl.textContent = formatTokens(pred.totalMaxTokens);
+      if (fleetPctEl) fleetPctEl.textContent = (pred.remainingPercentage || 0).toFixed(1) + "%";
+      if (fleetBarEl) {
+        fleetBarEl.style.width = Math.min(100, Math.max(0, pred.remainingPercentage || 0)) + "%";
+        fleetBarEl.style.background = getBarColor(pred.remainingPercentage || 0);
+      }
+
+      if (resetWavesDetail && fleet && fleet.resetWaves) {
+        var rw = fleet.resetWaves;
+        resetWavesDetail.innerHTML = [
+          "• Za <strong>≤3 dni:</strong> +" + (rw.wave1_under3d || 2) + " konta zresetują się do 100%<br>",
+          "• Za <strong>3–4 dni:</strong> +" + (rw.wave2_3to4d || 5) + " kont zresetuje się do 100%<br>",
+          "• Za <strong>4–5 dni:</strong> +" + (rw.wave3_4to5d || 6) + " kont zresetuje się do 100%<br>",
+          "• Za <strong>>5 dni:</strong> +" + (rw.wave4_over5d || 1) + " konto zresetuje się do 100%"
+        ].join("");
+      }
+
+      // 4. Col 3: Fuel Gauge
+      renderFleetGauge(pred);
     }
 
     function renderLiveLogs(logs) {
@@ -1399,14 +1961,17 @@ export function renderDashboardHtml(): string {
     // Modal Handlers
     window.openAccountModal = async function() {
       document.getElementById("accountModal").style.display = "flex";
+      const link = document.getElementById("oauthLinkBtn");
+      link.href = "#";
+      link.style.pointerEvents = "none";
       try {
         const res = await fetch("/api/admin/oauth-url", { headers: { "x-admin-password": adminToken } });
         const d = await res.json();
-        if (d.url) {
-          document.getElementById("oauthLinkBtn").href = d.url;
-        }
+        if (!res.ok || !d.url) throw new Error(d.error || "Failed to load Google authorization link");
+        link.href = d.url;
+        link.style.pointerEvents = "auto";
       } catch (err) {
-        console.error("Failed to load OAuth URL:", err);
+        alert("Unable to start Google login: " + err.message);
       }
     };
 
@@ -1416,21 +1981,34 @@ export function renderDashboardHtml(): string {
     };
 
     window.submitAuthCode = async function() {
-      const code = document.getElementById("authCodeInput").value.trim();
-      if (!code) { alert("Please enter the authorization code"); return; }
+      const callbackUrl = document.getElementById("authCodeInput").value.trim();
+      try {
+        const callback = new URL(callbackUrl);
+        if (!callback.searchParams.get("code") || !callback.searchParams.get("state")) throw new Error("Missing code or state");
+      } catch {
+        alert("Paste the complete URL from the address bar after Google redirects to localhost:51121, including code and state.");
+        return;
+      }
+      const button = document.getElementById("submitAuthCodeBtn");
+      if (button.disabled) return;
+      button.disabled = true;
+      button.textContent = "Connecting account…";
       try {
         const res = await fetch("/api/admin/accounts/oauth-exchange", {
           method: "POST",
           headers: { "Content-Type": "application/json", "x-admin-password": adminToken },
-          body: JSON.stringify({ code })
+          body: JSON.stringify({ callbackUrl })
         });
         const d = await res.json();
         if (!res.ok) throw new Error(d.error || "Failed to connect account");
-        alert("Account connected successfully: " + (d.account?.email || "OK"));
+        alert("Account connected successfully: " + (d.email || "OK"));
         closeAccountModal();
         refreshAll();
       } catch (err) {
         alert("Error: " + err.message);
+      } finally {
+        button.disabled = false;
+        button.textContent = "Submit & Connect Account";
       }
     };
 

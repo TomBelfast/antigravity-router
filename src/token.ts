@@ -1,7 +1,7 @@
 import { loadUsage } from "./stats.js";
 import { loadAccounts, saveAccounts, type Account } from "./storage.js";
 import { refreshAccessToken } from "./oauth.js";
-import { ANTIGRAVITY_ENDPOINTS, ANTIGRAVITY_HEADERS } from "./constants.js";
+import { ANTIGRAVITY_ENDPOINT_DAILY, ANTIGRAVITY_HEADERS } from "./constants.js";
 
 // In-memory cooldown tracker: email -> timestamp when rate limit expires
 const cooldowns = new Map<string, number>();
@@ -168,7 +168,8 @@ const quotaCache = new Map<string, CachedAccountQuota>();
 
 /**
  * Queries Google CloudCode API for real live model quotas.
- * Automatically tries retrieveUserQuotaSummary on all Antigravity PA endpoints (Daily first).
+ * Uses daily quota windows, matching the Antigravity account limits.
+ * Production reports a separate Gemini allowance and must not be used as a quota fallback.
  * Falls back to fetchAvailableModels if summary is not available.
  */
 export async function fetchLiveQuotaForAccount(account: Account): Promise<CachedAccountQuota> {
@@ -178,8 +179,8 @@ export async function fetchLiveQuotaForAccount(account: Account): Promise<Cached
     let summaryData: any = null;
     let lastError: any = null;
 
-    // 1. Try retrieveUserQuotaSummary across endpoints (Daily first!)
-    for (const endpoint of ANTIGRAVITY_ENDPOINTS) {
+    // 1. Read the account windows from daily; generation endpoint order is independent.
+    for (const endpoint of [ANTIGRAVITY_ENDPOINT_DAILY]) {
       try {
         const res = await fetch(`${endpoint}/v1internal:retrieveUserQuotaSummary`, {
           method: "POST",
@@ -305,7 +306,7 @@ export async function fetchLiveQuotaForAccount(account: Account): Promise<Cached
 
     // 2. Fallback to fetchAvailableModels if retrieveUserQuotaSummary is not available
     let data: any = null;
-    for (const endpoint of ANTIGRAVITY_ENDPOINTS) {
+    for (const endpoint of [ANTIGRAVITY_ENDPOINT_DAILY]) {
       try {
         const res = await fetch(`${endpoint}/v1internal:fetchAvailableModels`, {
           method: "POST",
@@ -537,4 +538,233 @@ export function addOrUpdateAccount(account: Account): void {
   saveAccounts(accounts);
   cooldowns.delete(account.email);
   fetchLiveQuotaForAccount(account).catch(() => {});
+}
+
+export interface WeeklyFleetHealth {
+  equivalentFullAccounts: number;
+  avgWeeklyPercentage: number;
+  criticalCount: number;
+  lowCount: number;
+  healthyCount: number;
+  remainingTokensWeekly: number;
+  maxTokensWeekly: number;
+}
+
+export interface FleetQuotaSummary {
+  totalAccounts: number;
+  activeAccounts: number;
+  rateLimitedAccounts: number;
+
+  // Weekly Limits (The True Constraint Until Reset)
+  claudeWeekly: WeeklyFleetHealth;
+  geminiWeekly: WeeklyFleetHealth;
+
+  // 5-hour Snapshot
+  claude5h: {
+    remainingTokens: number;
+    maxTokens: number;
+    usedTokens: number;
+    remainingPercentage: number;
+  };
+  gemini5h: {
+    remainingTokens: number;
+    maxTokens: number;
+    usedTokens: number;
+    remainingPercentage: number;
+  };
+
+  // Combined Available Pool
+  totalRemainingTokens: number;
+  totalMaxTokens: number;
+  totalUsedTokens: number;
+  remainingPercentage: number;
+
+  daysToWeeklyReset: number;
+  hoursToWeeklyReset: number;
+  weeklyResetSeconds: number;
+
+  // Staggered Individual Account Resets
+  nextResetSeconds: number;
+  nextResetDays: number;
+  nextResetHours: number;
+  nextResetTime?: string;
+  nextResetEmail?: string;
+  resetWaves: {
+    wave1_under3d: number;
+    wave2_3to4d: number;
+    wave3_4to5d: number;
+    wave4_over5d: number;
+  };
+}
+export function getWeeklyResetSeconds(): number {
+  const now = new Date();
+  const day = now.getUTCDay();
+  // Weekly reset cycle anchor: Thursday 09:00:00 UTC (day 4)
+  const daysToAdd = (4 - day + 7) % 7;
+  const target = new Date(now.getTime());
+  target.setUTCDate(target.getUTCDate() + daysToAdd);
+  target.setUTCHours(9, 0, 0, 0);
+  if (target.getTime() <= now.getTime()) {
+    target.setUTCDate(target.getUTCDate() + 7);
+  }
+  return Math.max(0, Math.floor((target.getTime() - now.getTime()) / 1000));
+}
+
+export function getFleetQuotaSummary(accountsStatus?: AccountQuotaStatus[]): FleetQuotaSummary {
+  const accounts = accountsStatus || getAccountsStatus();
+  const total = accounts.length || 1;
+
+  let c5hRemaining = 0, c5hMax = 0, c5hUsed = 0;
+  let g5hRemaining = 0, g5hMax = 0, g5hUsed = 0;
+
+  let cWeeklySum = 0, gWeeklySum = 0;
+  let cCritical = 0, cLow = 0, cHealthy = 0;
+  let gCritical = 0, gLow = 0, gHealthy = 0;
+
+  let active = 0, rateLimited = 0;
+
+  const CLAUDE_WEEKLY_ACCOUNT_TOKENS = 1500000;
+  const GEMINI_WEEKLY_ACCOUNT_TOKENS = 8000000;
+  let minResetSec = Infinity;
+  let minResetTime = "";
+  let minResetEmail = "";
+  let w1 = 0, w2 = 0, w3 = 0, w4 = 0;
+
+  for (const acc of accounts) {
+    if (acc.status === "active") active++;
+    else rateLimited++;
+
+    const cQ = acc.claudeQuota;
+    const gQ = acc.geminiQuota;
+
+    let accMinReset = Infinity;
+    let accMinTime = "";
+
+    if (cQ) {
+      c5hRemaining += cQ.remainingTokens ?? 0;
+      c5hMax += cQ.maxTokens || 250000;
+      c5hUsed += cQ.usedTokens ?? 0;
+
+      const cWkPct = typeof cQ.weeklyPercentage === "number" ? cQ.weeklyPercentage : (cQ.remainingPercentage ?? 100);
+      cWeeklySum += cWkPct;
+      if (cWkPct <= 10) cCritical++;
+      else if (cWkPct <= 40) cLow++;
+      else cHealthy++;
+
+      const cSec = cQ.weeklyResetSeconds || cQ.resetSeconds || 0;
+      if (cSec > 0 && cSec < accMinReset) {
+        accMinReset = cSec;
+        accMinTime = cQ.weeklyResetTime || cQ.resetTime || "";
+      }
+    }
+
+    if (gQ) {
+      g5hRemaining += gQ.remainingTokens ?? 0;
+      g5hMax += gQ.maxTokens || 1048576;
+      g5hUsed += gQ.usedTokens ?? 0;
+
+      const gWkPct = typeof gQ.weeklyPercentage === "number" ? gQ.weeklyPercentage : (gQ.remainingPercentage ?? 100);
+      gWeeklySum += gWkPct;
+      if (gWkPct <= 10) gCritical++;
+      else if (gWkPct <= 40) gLow++;
+      else gHealthy++;
+
+      const gSec = gQ.weeklyResetSeconds || gQ.resetSeconds || 0;
+      if (gSec > 0 && gSec < accMinReset) {
+        accMinReset = gSec;
+        accMinTime = gQ.weeklyResetTime || gQ.resetTime || "";
+      }
+    }
+
+    if (accMinReset < minResetSec) {
+      minResetSec = accMinReset;
+      minResetTime = accMinTime;
+      minResetEmail = acc.email;
+    }
+
+    if (accMinReset <= 3 * 86400) w1++;
+    else if (accMinReset <= 4 * 86400) w2++;
+    else if (accMinReset <= 5 * 86400) w3++;
+    else w4++;
+  }
+
+  const cEqAccounts = Math.round((cWeeklySum / 100) * 100) / 100;
+  const gEqAccounts = Math.round((gWeeklySum / 100) * 100) / 100;
+  const cAvgWkPct = Math.round((cWeeklySum / total) * 10) / 10;
+  const gAvgWkPct = Math.round((gWeeklySum / total) * 10) / 10;
+
+  const cRemainingWeeklyTokens = Math.round(cEqAccounts * CLAUDE_WEEKLY_ACCOUNT_TOKENS);
+  const gRemainingWeeklyTokens = Math.round(gEqAccounts * GEMINI_WEEKLY_ACCOUNT_TOKENS);
+  const cMaxWeeklyTokens = total * CLAUDE_WEEKLY_ACCOUNT_TOKENS;
+  const gMaxWeeklyTokens = total * GEMINI_WEEKLY_ACCOUNT_TOKENS;
+
+  const totalRemainingTokens = cRemainingWeeklyTokens + gRemainingWeeklyTokens;
+  const totalMaxTokens = cMaxWeeklyTokens + gMaxWeeklyTokens;
+  const totalUsedTokens = totalMaxTokens - totalRemainingTokens;
+  const remainingPercentage = totalMaxTokens > 0 ? Math.round((totalRemainingTokens / totalMaxTokens) * 1000) / 10 : 100;
+
+  const weeklyResetSeconds = minResetSec < Infinity ? minResetSec : getWeeklyResetSeconds();
+  const daysToWeeklyReset = Math.round((weeklyResetSeconds / 86400) * 10) / 10;
+  const hoursToWeeklyReset = Math.round(weeklyResetSeconds / 3600);
+
+  const nextResetSeconds = minResetSec < Infinity ? minResetSec : weeklyResetSeconds;
+  const nextResetDays = Math.round((nextResetSeconds / 86400) * 10) / 10;
+  const nextResetHours = Math.round(nextResetSeconds / 3600);
+  return {
+    totalAccounts: accounts.length,
+    activeAccounts: active,
+    rateLimitedAccounts: rateLimited,
+
+    claudeWeekly: {
+      equivalentFullAccounts: cEqAccounts,
+      avgWeeklyPercentage: cAvgWkPct,
+      criticalCount: cCritical,
+      lowCount: cLow,
+      healthyCount: cHealthy,
+      remainingTokensWeekly: cRemainingWeeklyTokens,
+      maxTokensWeekly: cMaxWeeklyTokens,
+    },
+    geminiWeekly: {
+      equivalentFullAccounts: gEqAccounts,
+      avgWeeklyPercentage: gAvgWkPct,
+      criticalCount: gCritical,
+      lowCount: gLow,
+      healthyCount: gHealthy,
+      remainingTokensWeekly: gRemainingWeeklyTokens,
+      maxTokensWeekly: gMaxWeeklyTokens,
+    },
+
+    claude5h: {
+      remainingTokens: c5hRemaining,
+      maxTokens: c5hMax,
+      usedTokens: c5hUsed,
+      remainingPercentage: c5hMax > 0 ? Math.round((c5hRemaining / c5hMax) * 1000) / 10 : 100,
+    },
+    gemini5h: {
+      remainingTokens: g5hRemaining,
+      maxTokens: g5hMax,
+      usedTokens: g5hUsed,
+      remainingPercentage: g5hMax > 0 ? Math.round((g5hRemaining / g5hMax) * 1000) / 10 : 100,
+    },
+
+    totalRemainingTokens,
+    totalMaxTokens,
+    totalUsedTokens,
+    remainingPercentage,
+
+    daysToWeeklyReset,
+    hoursToWeeklyReset,
+    weeklyResetSeconds,
+    nextResetSeconds,
+    nextResetDays,
+    nextResetHours,
+    nextResetTime: minResetTime || undefined,
+    nextResetEmail: minResetEmail || undefined,
+    resetWaves: {
+      wave1_under3d: w1,
+      wave2_3to4d: w2,
+      wave3_4to5d: w3,
+      wave4_over5d: w4,
+    },
+  };
 }

@@ -22,6 +22,7 @@ import {
   advanceAccountIndex,
   getAccountsStatus,
   refreshAllAccountsQuota,
+  getFleetQuotaSummary,
 } from "./token.js";
 import {
   openAIToAntigravity,
@@ -165,11 +166,13 @@ app.get("/api/admin/data", (req: Request, res: Response) => {
   }
   const accountsStatus = getAccountsStatus();
   const keys = loadApiKeys();
+  const fleet = getFleetQuotaSummary(accountsStatus);
   res.json({
     totalAccounts: accountsStatus.length,
     activeAccounts: accountsStatus.filter((a) => a.status === "active").length,
     accounts: accountsStatus,
     keys,
+    fleet,
   });
 });
 
@@ -200,7 +203,127 @@ app.get("/api/admin/stats", (req: Request, res: Response) => {
   const model = req.query.model ? String(req.query.model) : undefined;
   const accountEmail = req.query.accountEmail ? String(req.query.accountEmail) : undefined;
   const stats = getUsageStats({ range, keyId, model, accountEmail });
-  res.json(stats);
+  const fleet = getFleetQuotaSummary();
+
+  const dailyBurn = stats.burnRate.effectiveDailyBurn;
+  const daysRemaining = dailyBurn > 0 ? Math.round((fleet.totalRemainingTokens / dailyBurn) * 10) / 10 : null;
+
+  const claudeDailyBurn = stats.burnRate.claudeTokens24h > 0
+    ? stats.burnRate.claudeTokens24h
+    : (stats.burnRate.claudeDailyAvg7d > 0 ? stats.burnRate.claudeDailyAvg7d : (stats.burnRate.allTimeDailyAvg > 0 ? Math.round(stats.burnRate.allTimeDailyAvg * 0.4) : 0));
+  const geminiDailyBurn = stats.burnRate.geminiTokens24h > 0
+    ? stats.burnRate.geminiTokens24h
+    : (stats.burnRate.geminiDailyAvg7d > 0 ? stats.burnRate.geminiDailyAvg7d : (stats.burnRate.allTimeDailyAvg > 0 ? Math.round(stats.burnRate.allTimeDailyAvg * 0.6) : 0));
+
+  const claudeDaysRemaining = claudeDailyBurn > 0
+    ? Math.round((fleet.claudeWeekly.remainingTokensWeekly / claudeDailyBurn) * 10) / 10
+    : null;
+  const geminiDaysRemaining = geminiDailyBurn > 0
+    ? Math.round((fleet.geminiWeekly.remainingTokensWeekly / geminiDailyBurn) * 10) / 10
+    : null;
+
+  const daysToReset = fleet.daysToWeeklyReset; // e.g. 4.8 days
+  const totalAccounts = fleet.totalAccounts || 14;
+
+  const claudeEq = fleet.claudeWeekly.equivalentFullAccounts; // e.g. 5.88
+  const geminiEq = fleet.geminiWeekly.equivalentFullAccounts; // e.g. 7.77
+
+  const claudeTokensNeeded = claudeDailyBurn * daysToReset;
+  const geminiTokensNeeded = geminiDailyBurn * daysToReset;
+  const claudeAccountsNeeded = claudeTokensNeeded > 0 ? Math.max(1, Math.ceil(claudeTokensNeeded / 1000000)) : 1;
+  const geminiAccountsNeeded = geminiTokensNeeded > 0 ? Math.max(1, Math.ceil(geminiTokensNeeded / 4000000)) : 1;
+  const requiredAccounts = Math.max(1, claudeAccountsNeeded, geminiAccountsNeeded);
+
+  const spareClaudeAccounts = Math.max(0, Math.round((claudeEq - claudeAccountsNeeded) * 10) / 10);
+  const spareGeminiAccounts = Math.max(0, Math.round((geminiEq - geminiAccountsNeeded) * 10) / 10);
+  const spareAccounts = Math.min(spareClaudeAccounts, spareGeminiAccounts);
+
+  const fleetDailyCapacity = totalAccounts * 1500000;
+  const fleetSaturationPct = dailyBurn > 0 ? Math.min(100, Math.round((dailyBurn / Math.max(1, fleet.totalRemainingTokens)) * 1000) / 10) : 0;
+
+  let verdictStatus: "sufficient" | "warning" | "deficit" = "sufficient";
+  let verdictTitle = "";
+  let verdictMessage = "";
+  let accountsToAdd = 0;
+
+  const w = fleet.resetWaves;
+  const nextDays = fleet.nextResetDays;
+  const nextEmail = fleet.nextResetEmail ? fleet.nextResetEmail.replace(/@gmail\.com$/, "") : "konto";
+
+  // Effective burn rate per day on active days (defaulting to 50k if currently idle)
+  const activeDailyBurn = dailyBurn > 0 ? dailyBurn : 50000;
+  const activeClaudeBurn = claudeDailyBurn > 0 ? claudeDailyBurn : 25000;
+
+  // Tokens needed until the next account reset wave arrives (in nextDays)
+  const claudeTokensNeededUntilReset = activeClaudeBurn * nextDays;
+  const totalTokensNeededUntilReset = activeDailyBurn * nextDays;
+
+  const claudePool = fleet.claudeWeekly.remainingTokensWeekly || 1;
+  const totalPool = fleet.totalRemainingTokens || 1;
+
+  if (claudeTokensNeededUntilReset > claudePool || totalTokensNeededUntilReset > totalPool) {
+    verdictStatus = "deficit";
+    const tokenDeficit = Math.max(claudeTokensNeededUntilReset - claudePool, totalTokensNeededUntilReset - totalPool);
+    accountsToAdd = Math.max(1, Math.ceil(tokenDeficit / 1500000));
+    verdictTitle = `🔴 ZA MAŁO KONT: BRAKNIE TOKENÓW PRZED RESETEM!`;
+    verdictMessage = `Przy Twoim tempie kodowania zapas wyczerpie się przed najbliższym resetem (${nextEmail} za ${nextDays} dni). Musisz dodać +${accountsToAdd} kont Google.`;
+  } else if (claudeTokensNeededUntilReset > 0.6 * claudePool || totalTokensNeededUntilReset > 0.6 * totalPool) {
+    verdictStatus = "warning";
+    accountsToAdd = 2;
+    verdictTitle = `🟡 NA STYKU: WYSTARCZY, ALE PRZY MARATONIE WARTO DODAĆ +2 KONTA`;
+    verdictMessage = `Obecny zapas wystarczy do najbliższego resetu (${nextEmail} za ${nextDays} dni), ale przy bardzo intensywnej pracy możesz zejść blisko zera.`;
+  } else {
+    verdictStatus = "sufficient";
+    accountsToAdd = 0;
+    verdictTitle = `🟢 WYSTARCZY W 100% — NIE TRZEBA DODAWAĆ KONT`;
+    verdictMessage = `Twoje obecne tempo kodowania zużywa tylko ułamek floty. Masz ${fleet.claudeWeekly.equivalentFullAccounts} pełnych kont Claude i ${fleet.geminiWeekly.equivalentFullAccounts} Gemini. Za ${nextDays} dni zresetują się kolejne 2 konta (${nextEmail}). Wszystko działa bez przerw.`;
+  }
+
+  const prediction = {
+    totalRemainingTokens: fleet.totalRemainingTokens,
+    totalMaxTokens: fleet.totalMaxTokens,
+    totalUsedTokens: fleet.totalUsedTokens,
+    remainingPercentage: fleet.remainingPercentage,
+    dailyBurnRate: dailyBurn,
+    burnRateSource: stats.burnRate.source,
+    daysRemaining,
+    hoursRemaining: daysRemaining !== null ? Math.round(daysRemaining * 24) : null,
+    activeAccounts: fleet.activeAccounts,
+    totalAccounts: fleet.totalAccounts,
+
+    // Capacity Sizing & Decision Verdict based on weekly reality
+    verdictStatus,
+    verdictTitle,
+    verdictMessage,
+    requiredAccounts,
+    spareAccounts,
+    accountsToAdd,
+    fleetSaturationPct,
+    maxDailyCapacityTokens: fleetDailyCapacity,
+    daysToWeeklyReset: fleet.daysToWeeklyReset,
+    hoursToWeeklyReset: fleet.hoursToWeeklyReset,
+
+    claude: {
+      ...fleet.claudeWeekly,
+      dailyBurn: claudeDailyBurn,
+      daysRemaining: claudeDaysRemaining,
+      requiredAccounts: claudeAccountsNeeded,
+      spareAccounts: spareClaudeAccounts,
+    },
+    gemini: {
+      ...fleet.geminiWeekly,
+      dailyBurn: geminiDailyBurn,
+      daysRemaining: geminiDaysRemaining,
+      requiredAccounts: geminiAccountsNeeded,
+      spareAccounts: spareGeminiAccounts,
+    },
+  };
+
+  res.json({
+    ...stats,
+    fleet,
+    prediction,
+  });
 });
 
 // ── Admin Account Management Endpoints ────────────────────────────────────
