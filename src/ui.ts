@@ -533,8 +533,8 @@ export function renderDashboardHtml(): string {
             Ładowanie statusu floty...
           </div>
         </div>
-        <div id="verdictActionChip" style="padding: 8px 16px; border-radius: 8px; background: rgba(245, 158, 11, 0.2); border: 1px solid #f59e0b; font-size: 12px; font-weight: 800; color: #fde68a; letter-spacing: 0.3px; white-space: nowrap;">
-          ⚡ ZALECANY BUFOR +3-4 KONTA
+        <div id="verdictActionChip" style="padding: 8px 16px; border-radius: 8px; background: rgba(42, 245, 39, 0.18); border: 1px solid #2AF527; font-size: 12px; font-weight: 800; color: #fff; letter-spacing: 0.3px; white-space: nowrap;">
+          ✅ BRAK POTRZEBY DODAWANIA KONT
         </div>
       </div>
     </div>
@@ -1040,7 +1040,7 @@ export function renderDashboardHtml(): string {
           timestamp: lbl,
           requests: (data.requestsData || [])[i] || 0,
           tokens: (data.tokensData || [])[i] || 0,
-          latencyMs: (data.latencyData || [])[i] || 0,
+          latencyMs: (data.latencyData && data.latencyData[i] != null) ? data.latencyData[i] : null,
         }));
         data._timeline = timelineNorm;
         cachedStats = data;
@@ -1119,7 +1119,8 @@ export function renderDashboardHtml(): string {
             data: dataVals,
             borderColor,
             backgroundColor: bgColor,
-            fill: true,
+            fill: activeTimelineMetric !== "latency",
+            spanGaps: true,
             tension: 0.35,
             pointRadius: 3,
             pointHoverRadius: 6,
@@ -1129,7 +1130,20 @@ export function renderDashboardHtml(): string {
         options: {
           responsive: true,
           maintainAspectRatio: false,
-          plugins: { legend: { display: false } },
+          plugins: {
+            legend: { display: false },
+            tooltip: {
+              callbacks: {
+                label: function(context) {
+                  var val = context.parsed.y;
+                  if (val === null || val === undefined) return " Brak danych";
+                  if (activeTimelineMetric === "latency") return " Latency: " + val + " ms";
+                  if (activeTimelineMetric === "tokens") return " Tokens: " + Number(val).toLocaleString();
+                  return " Requests: " + Number(val).toLocaleString();
+                }
+              }
+            }
+          },
           scales: {
             x: {
               grid: { color: "rgba(255, 255, 255, 0.04)" },

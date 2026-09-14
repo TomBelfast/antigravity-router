@@ -246,38 +246,34 @@ app.get("/api/admin/stats", (req: Request, res: Response) => {
   let verdictMessage = "";
   let accountsToAdd = 0;
 
-  const w = fleet.resetWaves;
-  const nextDays = fleet.nextResetDays;
+  const nextDays = fleet.nextResetDays || 1;
   const nextEmail = fleet.nextResetEmail ? fleet.nextResetEmail.replace(/@gmail\.com$/, "") : "konto";
+  const claudeAvgPct = fleet.claudeWeekly.avgWeeklyPercentage ?? 100;
+  const geminiAvgPct = fleet.geminiWeekly.avgWeeklyPercentage ?? 100;
+  const criticalAccounts = (fleet.claudeWeekly.criticalCount || 0) + (fleet.geminiWeekly.criticalCount || 0);
+  const activeAccounts = fleet.activeAccounts || 0;
 
-  // Effective burn rate per day on active days (defaulting to 50k if currently idle)
-  const activeDailyBurn = dailyBurn > 0 ? dailyBurn : 50000;
-  const activeClaudeBurn = claudeDailyBurn > 0 ? claudeDailyBurn : 25000;
 
-  // Tokens needed until the next account reset wave arrives (in nextDays)
-  const claudeTokensNeededUntilReset = activeClaudeBurn * nextDays;
-  const totalTokensNeededUntilReset = activeDailyBurn * nextDays;
+  // Accounts needed to safely bridge until next reset wave (assuming 1 full account covers ~2 days of intensive coding):
+  const safeAccountsForNextDays = Math.max(1, Math.ceil(nextDays * 0.7));
 
-  const claudePool = fleet.claudeWeekly.remainingTokensWeekly || 1;
-  const totalPool = fleet.totalRemainingTokens || 1;
-
-  if (claudeTokensNeededUntilReset > claudePool || totalTokensNeededUntilReset > totalPool) {
+  if (activeAccounts === 0 || (claudeEq < 1.0 && geminiEq < 1.5)) {
     verdictStatus = "deficit";
-    const tokenDeficit = Math.max(claudeTokensNeededUntilReset - claudePool, totalTokensNeededUntilReset - totalPool);
-    accountsToAdd = Math.max(1, Math.ceil(tokenDeficit / 1500000));
-    verdictTitle = `🔴 ZA MAŁO KONT: BRAKNIE TOKENÓW PRZED RESETEM!`;
-    verdictMessage = `Przy Twoim tempie kodowania zapas wyczerpie się przed najbliższym resetem (${nextEmail} za ${nextDays} dni). Musisz dodać +${accountsToAdd} kont Google.`;
-  } else if (claudeTokensNeededUntilReset > 0.6 * claudePool || totalTokensNeededUntilReset > 0.6 * totalPool) {
+    accountsToAdd = Math.min(4, Math.max(2, Math.ceil(safeAccountsForNextDays - claudeEq) + 1));
+    verdictTitle = `🔴 DEFICYT: NISKI ZAPAS PRZED RESETEM`;
+    verdictMessage = `Dostępny zapas wynosi tylko ${claudeEq} pełnych kont Claude i ${geminiEq} Gemini przed najbliższym resetem (${nextEmail} za ${nextDays} dni). Dodaj +${accountsToAdd} konta, aby zachować ciągłość pracy.`;
+  } else if (claudeEq < safeAccountsForNextDays || claudeAvgPct < 25 || fleet.rateLimitedAccounts >= 3) {
     verdictStatus = "warning";
     accountsToAdd = 2;
     verdictTitle = `🟡 NA STYKU: WYSTARCZY, ALE PRZY MARATONIE WARTO DODAĆ +2 KONTA`;
-    verdictMessage = `Obecny zapas wystarczy do najbliższego resetu (${nextEmail} za ${nextDays} dni), ale przy bardzo intensywnej pracy możesz zejść blisko zera.`;
+    verdictMessage = `Obecny zapas (${claudeEq} pełnych kont Claude, ${geminiEq} Gemini) wystarczy do najbliższego resetu (${nextEmail} za ${nextDays} dni). Przy bardzo intensywnym maratonie zalecany bufor +2 konta.`;
   } else {
     verdictStatus = "sufficient";
     accountsToAdd = 0;
     verdictTitle = `🟢 WYSTARCZY W 100% — NIE TRZEBA DODAWAĆ KONT`;
-    verdictMessage = `Twoje obecne tempo kodowania zużywa tylko ułamek floty. Masz ${fleet.claudeWeekly.equivalentFullAccounts} pełnych kont Claude i ${fleet.geminiWeekly.equivalentFullAccounts} Gemini. Za ${nextDays} dni zresetują się kolejne 2 konta (${nextEmail}). Wszystko działa bez przerw.`;
+    verdictMessage = `Twoja flota (${totalAccounts} kont, w tym ${activeAccounts} w pełni aktywnych, ~${claudeEq} pełnych kont Claude i ~${geminiEq} Gemini) bez problemu obsłuży pracę. Najbliższy reset konta (${nextEmail}) za ${nextDays} dni.`;
   }
+  accountsToAdd = Math.min(10, Math.max(0, accountsToAdd));
 
   const prediction = {
     totalRemainingTokens: fleet.totalRemainingTokens,
@@ -547,8 +543,9 @@ app.post(
         const decoder = new TextDecoder();
         let buffer = "";
         const streamState: StreamState = { hadToolCalls: false, isFirstChunk: true };
-
         let totalStreamedText = "";
+        let openAiStreamPromptTokens = 0;
+        let openAiStreamCompletionTokens = 0;
         try {
           while (true) {
             const { done, value } = await reader.read();
@@ -569,7 +566,12 @@ app.post(
                 if (sseText) {
                   try {
                     const parsed = JSON.parse(jsonStr);
-                    const cand = parsed?.response?.candidates?.[0] || parsed?.candidates?.[0];
+                    const root = parsed?.response ?? parsed;
+                    if (root?.usageMetadata) {
+                      if (root.usageMetadata.promptTokenCount) openAiStreamPromptTokens = root.usageMetadata.promptTokenCount;
+                      if (root.usageMetadata.candidatesTokenCount) openAiStreamCompletionTokens = root.usageMetadata.candidatesTokenCount;
+                    }
+                    const cand = root?.candidates?.[0];
                     const parts = cand?.content?.parts || [];
                     const t = parts.map((p: any) => (!p.thought ? (p?.text ?? "") : "")).join("");
                     totalStreamedText += t;
@@ -589,10 +591,12 @@ app.post(
           const latencyMs = Date.now() - startTime;
           console.log(`[${requestId}] Stream finished. Total streamed characters: ${totalStreamedText.length}, preview: "${totalStreamedText.slice(0, 120)}"`);
           const keyInfo = (req as any).apiKeyInfo || {};
+          const promptTokens = openAiStreamPromptTokens || Math.max(20, Math.round(JSON.stringify(req.body || "").length / 4));
+          const completionTokens = openAiStreamCompletionTokens || Math.max(10, Math.round(totalStreamedText.length / 4));
           recordUsage({
             model: requestedModel,
-            promptTokens: 50,
-            completionTokens: 120,
+            promptTokens,
+            completionTokens,
             keyId: keyInfo.id,
             keyName: keyInfo.name,
             accountEmail: result.activeAccount,
@@ -633,7 +637,7 @@ app.post(
   requireApiKey,
   async (req: Request, res: Response) => {
     const requestId = randomUUID().replace(/-/g, "").slice(0, 16);
-
+    const startTime = Date.now();
     try {
       const body = req.body as AnthropicRequest;
       const requestedModel = body.model || "claude-sonnet-4-6";
@@ -674,7 +678,9 @@ app.post(
         let currentBlockIndex = 0;
         let textBlockStarted = false;
         let hasToolUse = false;
-
+        let streamPromptTokens = 0;
+        let streamCompletionTokens = 0;
+        let streamedTextLength = 0;
         try {
           while (true) {
             const { done, value } = await reader.read();
@@ -692,9 +698,12 @@ app.post(
                 try {
                   const parsed = JSON.parse(jsonStr);
                   const root = parsed?.response ?? parsed;
+                  if (root?.usageMetadata) {
+                    if (root.usageMetadata.promptTokenCount) streamPromptTokens = root.usageMetadata.promptTokenCount;
+                    if (root.usageMetadata.candidatesTokenCount) streamCompletionTokens = root.usageMetadata.candidatesTokenCount;
+                  }
                   const candidate = root?.candidates?.[0];
                   const parts = candidate?.content?.parts ?? [];
-
                   for (const p of parts) {
                     if (p.text && !p.thought) {
                       if (!textBlockStarted) {
@@ -702,6 +711,7 @@ app.post(
                         textBlockStarted = true;
                       }
                       res.write(`event: content_block_delta\ndata: ${JSON.stringify({ type: "content_block_delta", index: currentBlockIndex, delta: { type: "text_delta", text: p.text } })}\n\n`);
+                      streamedTextLength += p.text.length;
                     }
                     if (p.functionCall) {
                       hasToolUse = true;
@@ -730,15 +740,36 @@ app.post(
         } catch (streamErr) {
           console.error(`[${requestId}] Anthropic stream reading error:`, streamErr);
         } finally {
+          const latencyMs = Date.now() - startTime;
+          const keyInfo = (req as any).apiKeyInfo || {};
+          const promptTokens = streamPromptTokens || Math.max(20, Math.round(JSON.stringify(req.body || "").length / 4));
+          const completionTokens = streamCompletionTokens || Math.max(10, Math.round(streamedTextLength / 4));
+          recordUsage({
+            model: requestedModel,
+            promptTokens,
+            completionTokens,
+            keyId: keyInfo.id,
+            keyName: keyInfo.name,
+            accountEmail: result.activeAccount,
+            latencyMs,
+            status: "success",
+          });
           res.end();
         }
       } else {
         const data = await apiRes.json();
         const anthropicResp = antigravityToAnthropic(data, requestedModel, requestId);
+        const latencyMs = Date.now() - startTime;
+        const keyInfo = (req as any).apiKeyInfo || {};
         recordUsage({
           model: requestedModel,
           promptTokens: (anthropicResp.usage as any)?.input_tokens || 20,
           completionTokens: (anthropicResp.usage as any)?.output_tokens || 10,
+          keyId: keyInfo.id,
+          keyName: keyInfo.name,
+          accountEmail: result.activeAccount,
+          latencyMs,
+          status: "success",
         });
         res.json(anthropicResp);
       }

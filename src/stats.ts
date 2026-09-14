@@ -1,8 +1,8 @@
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
+import { execFileSync } from "node:child_process";
 import { getConfigDir } from "./storage.js";
-
 export interface UsageEntry {
   id: string;
   timestamp: number;
@@ -72,7 +72,7 @@ export interface StatsResponse {
   labels: string[];
   requestsData: number[];
   tokensData: number[];
-  latencyData: number[];
+  latencyData: (number | null)[];
   models: ModelStat[];
   keys: KeyStat[];
   accounts: AccountStat[];
@@ -101,11 +101,74 @@ export interface StatsResponse {
 }
 
 const USAGE_FILE = process.env.USAGE_FILE || join(getConfigDir(), "usage.json");
+const SQLITE_FILE = process.env.SQLITE_USAGE_FILE || "/root/.omniroute/storage.sqlite";
 const RETENTION_MS = 32 * 24 * 60 * 60 * 1000; // 32 days
 
 let inMemoryUsage: UsageEntry[] | null = null;
+let lastSqliteSync = 0;
+export function syncFromSqlite(): void {
+  const now = Date.now();
+  if (now - lastSqliteSync < 15000) return;
+  lastSqliteSync = now;
+  if (!existsSync(SQLITE_FILE)) return;
+
+  try {
+    const pyScript = `
+import sqlite3, json, datetime
+try:
+    db = sqlite3.connect("file:${SQLITE_FILE}?mode=ro", uri=True)
+    cur = db.cursor()
+    cutoff = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=32)).isoformat()
+    cur.execute("""
+        SELECT 
+            id, timestamp, model, account_label, api_key_id, api_key_name,
+            tokens_input, tokens_output, latency_ms, status, error_code
+        FROM usage_history
+        WHERE timestamp >= ?
+        ORDER BY id ASC
+    """, (cutoff,))
+    entries = []
+    for r in cur.fetchall():
+        p_tok = max(0, r[6] or 0)
+        c_tok = max(0, r[7] or 0)
+        ts_val = r[1]
+        if isinstance(ts_val, str):
+            try:
+                dt = datetime.datetime.fromisoformat(ts_val.replace("Z", "+00:00"))
+                ts_ms = int(dt.timestamp() * 1000)
+            except Exception:
+                ts_ms = int(datetime.datetime.now().timestamp() * 1000)
+        else:
+            ts_ms = int(datetime.datetime.now().timestamp() * 1000)
+        entries.append({
+            "id": str(r[0]),
+            "timestamp": ts_ms,
+            "model": r[2] or "unknown",
+            "accountEmail": r[3] or "Google Account",
+            "keyId": r[4] or "",
+            "keyName": r[5] or "OMP",
+            "promptTokens": p_tok,
+            "completionTokens": c_tok,
+            "totalTokens": p_tok + c_tok,
+            "latencyMs": max(0, r[8] or 0),
+            "status": "success" if (r[9] == "200" or r[9] == "success") else "error",
+            "errorMessage": r[10]
+        })
+    db.close()
+    with open("${USAGE_FILE}", "w") as f:
+        json.dump(entries, f)
+except Exception as e:
+    pass
+`;
+    execFileSync("/usr/bin/python3", ["-c", pyScript], { timeout: 10000 });
+    inMemoryUsage = null;
+  } catch (err) {
+    console.warn("[stats] Sync from sqlite error:", err);
+  }
+}
 
 export function loadUsage(): UsageEntry[] {
+  syncFromSqlite();
   if (inMemoryUsage !== null) return inMemoryUsage;
   try {
     if (!existsSync(USAGE_FILE)) {
@@ -202,6 +265,17 @@ function calculateCostUsd(model: string, promptTokens: number, completionTokens:
   }
 
   return (promptTokens * inRate) + (completionTokens * outRate);
+}
+
+// The most recent bucket in the timeline (current hour / current day) is still in
+// progress, so its raw count is naturally lower than a finished bucket — not because
+// usage dropped. Project it to a full-bucket run-rate so the chart's last point holds
+// near the current level instead of appearing to crash toward 0.
+function projectPartialBucket(value: number, elapsedMs: number, bucketDurationMs: number): number {
+  const minFraction = 1 / 24; // never extrapolate from less than 1/24th of the bucket (avoids wild early spikes)
+  const fraction = Math.min(1, Math.max(elapsedMs / bucketDurationMs, minFraction));
+  if (fraction >= 1) return value;
+  return Math.round(value / fraction);
 }
 
 export function getUsageStats(filter: StatsFilterOptions): StatsResponse {
@@ -312,7 +386,7 @@ export function getUsageStats(filter: StatsFilterOptions): StatsResponse {
   const labels: string[] = [];
   const requestsData: number[] = [];
   const tokensData: number[] = [];
-  const latencyData: number[] = [];
+  const latencyData: (number | null)[] = [];
 
   if (filter.range === "24h") {
     const startOfCurrentHour = Math.floor(now / 3600000) * 3600000;
@@ -334,10 +408,22 @@ export function getUsageStats(filter: StatsFilterOptions): StatsResponse {
       }
       requestsData.push(reqs);
       tokensData.push(toks);
-      latencyData.push(reqs > 0 ? Math.round(latSum / reqs) : 0);
+      latencyData.push(reqs > 0 ? Math.round(latSum / reqs) : null);
     }
+    // Last pushed bucket is the current (in-progress) hour.
+    const elapsedInHour = now - startOfCurrentHour;
+    const lastHourIdx = requestsData.length - 1;
+    requestsData[lastHourIdx] = projectPartialBucket(requestsData[lastHourIdx], elapsedInHour, 3600000);
+    tokensData[lastHourIdx] = projectPartialBucket(tokensData[lastHourIdx], elapsedInHour, 3600000);
   } else {
-    const days = filter.range === "7d" ? 7 : 30;
+    let days = 30;
+    if (filter.range === "7d") {
+      days = 7;
+    } else if (filter.range === "all") {
+      const earliestEntry = filtered.length > 0 ? Math.min(...filtered.map((e) => e.timestamp)) : now;
+      const daysSpan = Math.ceil((now - earliestEntry) / 86400000);
+      days = Math.min(365, Math.max(7, daysSpan));
+    }
     const startOfToday = new Date().setHours(0, 0, 0, 0);
     for (let i = days - 1; i >= 0; i--) {
       const bucketStart = startOfToday - i * 86400000;
@@ -357,8 +443,13 @@ export function getUsageStats(filter: StatsFilterOptions): StatsResponse {
       }
       requestsData.push(reqs);
       tokensData.push(toks);
-      latencyData.push(reqs > 0 ? Math.round(latSum / reqs) : 0);
+      latencyData.push(reqs > 0 ? Math.round(latSum / reqs) : null);
     }
+    // Last pushed bucket is today, still in progress.
+    const elapsedToday = now - startOfToday;
+    const lastDayIdx = requestsData.length - 1;
+    requestsData[lastDayIdx] = projectPartialBucket(requestsData[lastDayIdx], elapsedToday, 86400000);
+    tokensData[lastDayIdx] = projectPartialBucket(tokensData[lastDayIdx], elapsedToday, 86400000);
   }
   // Calculate burn rates across all entries (fleet total)
   const oneDayAgo = now - 24 * 60 * 60 * 1000;
